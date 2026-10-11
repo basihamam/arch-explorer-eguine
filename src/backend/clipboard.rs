@@ -91,7 +91,7 @@ pub fn clipboard_copy(paths: Vec<String>) -> Result<(), String> {
         op: ClipboardOp::Copy,
         paths: paths.clone(),
     });
-    copy_to_system_clipboard_async(paths.join("\n"));
+    copy_files_to_system_clipboard_async(paths, false);
     Ok(())
 }
 
@@ -102,7 +102,7 @@ pub fn clipboard_cut(paths: Vec<String>) -> Result<(), String> {
         op: ClipboardOp::Cut,
         paths: paths.clone(),
     });
-    copy_to_system_clipboard_async(paths.join("\n"));
+    copy_files_to_system_clipboard_async(paths, true);
     Ok(())
 }
 
@@ -150,6 +150,170 @@ pub fn copy_to_system_clipboard_async(text: String) {
         // 3. Fallback: arboard (arka plan iş parçacığında olduğu için UI donmaz)
         if let Ok(mut cb) = arboard::Clipboard::new() {
             let _ = cb.set_text(text);
+        }
+    });
+}
+
+/// Dosyaları sistem panosuna tüm MIME türleriyle (text/uri-list, x-special/gnome-copied-files, image/png, text/plain) yazar
+/// Firefox, Chrome, Discord, LibreOffice gibi tüm uygulamalarla tam uyumlu çalışır
+pub fn copy_files_to_system_clipboard_async(paths: Vec<String>, is_cut: bool) {
+    if paths.is_empty() { return; }
+    std::thread::spawn(move || {
+        let plain_text = paths.join("\n");
+        let uris: Vec<String> = paths.iter().map(|p| {
+            let encoded: String = p.chars().map(|c| {
+                if c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-' || c == '~' {
+                    c.to_string()
+                } else {
+                    format!("%{:02X}", c as u8)
+                }
+            }).collect();
+            format!("file://{}", encoded)
+        }).collect();
+
+        let uri_list = uris.join("\r\n") + "\r\n";
+        let action_prefix = if is_cut { "cut\n" } else { "copy\n" };
+        let gnome_copied = format!("{}{}\n", action_prefix, uris.join("\n"));
+
+        // 1. Wayland ortamında wl-copy ile text/uri-list kopyalamayı dene
+        let mut wl_success = false;
+        if let Ok(mut child) = std::process::Command::new("wl-copy")
+            .args(["-t", "text/uri-list"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(uri_list.as_bytes());
+            }
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    wl_success = true;
+                }
+            }
+        }
+
+        // Eğer tek bir görsel kopyalanıyorsa wl-copy ile image MIME kopyalamayı da dene
+        if paths.len() == 1 {
+            let p = &paths[0];
+            let lower = p.to_lowercase();
+            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp") {
+                if let Ok(mut child) = std::process::Command::new("wl-copy")
+                    .args(["-t", "image/png"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    if let Ok(img) = image::open(p) {
+                        use std::io::Cursor;
+                        let mut bytes = Vec::new();
+                        if img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).is_ok() {
+                            if let Some(mut stdin) = child.stdin.take() {
+                                use std::io::Write;
+                                let _ = stdin.write_all(&bytes);
+                            }
+                            let _ = child.wait();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Python / Gtk clipboard daemon (X11 & Wayland çoklu target desteği: text/uri-list + x-special/gnome-copied-files + text/plain)
+        let helper_code = r#"
+import sys, os, urllib.parse
+try:
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk, Gdk
+
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    paths = [os.path.abspath(p) for p in sys.argv[1:]]
+    uris = [f"file://{urllib.parse.quote(p)}" for p in paths]
+    uri_text = ("\r\n".join(uris) + "\r\n").encode('utf-8')
+    gnome_text = ("copy\n" + "\n".join(uris) + "\n").encode('utf-8')
+    plain_text = ("\n".join(paths) + "\n").encode('utf-8')
+
+    import ctypes
+    from ctypes import c_void_p, c_char_p, c_uint32, CFUNCTYPE, Structure, POINTER
+
+    gtk = ctypes.CDLL("libgtk-3.so.0")
+    gdk = ctypes.CDLL("libgdk-3.so.0")
+
+    class GtkTargetEntry(Structure):
+        _fields_ = [("target", c_char_p), ("flags", c_uint32), ("info", c_uint32)]
+
+    CLIPBOARD_GET_FUNC = CFUNCTYPE(None, c_void_p, c_void_p, c_uint32, c_void_p)
+    CLIPBOARD_CLEAR_FUNC = CFUNCTYPE(None, c_void_p, c_void_p)
+
+    targets = (GtkTargetEntry * 4)(
+        GtkTargetEntry(b"text/uri-list", 0, 0),
+        GtkTargetEntry(b"x-special/gnome-copied-files", 0, 1),
+        GtkTargetEntry(b"UTF8_STRING", 0, 2),
+        GtkTargetEntry(b"text/plain", 0, 3)
+    )
+
+    def get_data(clipboard, selection_data, info, user_data):
+        if info == 0:
+            target_atom = gdk.gdk_atom_intern(b"text/uri-list", False)
+            gtk.gtk_selection_data_set(selection_data, target_atom, 8, uri_text, len(uri_text))
+        elif info == 1:
+            target_atom = gdk.gdk_atom_intern(b"x-special/gnome-copied-files", False)
+            gtk.gtk_selection_data_set(selection_data, target_atom, 8, gnome_text, len(gnome_text))
+        else:
+            target_atom = gdk.gdk_atom_intern(b"UTF8_STRING", False)
+            gtk.gtk_selection_data_set(selection_data, target_atom, 8, plain_text, len(plain_text))
+
+    def clear_data(clipboard, user_data):
+        sys.exit(0)
+
+    global _c_get, _c_clear
+    _c_get = CLIPBOARD_GET_FUNC(get_data)
+    _c_clear = CLIPBOARD_CLEAR_FUNC(clear_data)
+
+    clipboard_atom = gdk.gdk_atom_intern(b"CLIPBOARD", False)
+    cb_ptr = gtk.gtk_clipboard_get(clipboard_atom)
+    gtk.gtk_clipboard_set_with_data.argtypes = [c_void_p, POINTER(GtkTargetEntry), c_uint32, CLIPBOARD_GET_FUNC, CLIPBOARD_CLEAR_FUNC, c_void_p]
+    gtk.gtk_clipboard_set_with_data.restype = c_int
+
+    if gtk.gtk_clipboard_set_with_data(cb_ptr, targets, 4, _c_get, _c_clear, None):
+        while True:
+            gtk.gtk_main_iteration_do(True)
+except Exception:
+    pass
+"#;
+
+        let _ = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(helper_code)
+            .args(&paths)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        // 3. Fallback: xclip (X11) ve arboard (düz metin fallback)
+        let _ = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard", "-target", "text/uri-list"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(uri_list.as_bytes());
+                }
+                child.wait()
+            });
+
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(plain_text);
         }
     });
 }

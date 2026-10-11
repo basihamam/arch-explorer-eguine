@@ -4,6 +4,16 @@ use crate::theme::types::AexTheme;
 use crate::state::AppState;
 use super::icon;
 
+pub trait CtxResponseExt {
+    fn ctx_act(&self) -> bool;
+}
+
+impl CtxResponseExt for Response {
+    fn ctx_act(&self) -> bool {
+        self.clicked() || self.secondary_clicked()
+    }
+}
+
 pub fn render(
     ctx: &Context,
     t: &AexTheme,
@@ -67,13 +77,13 @@ pub fn render(
                     // ── File/Folder context menu — sadece core items ─────────
 
                     // Open
-                    if ctx_item(ui, t, icon(t, "folder_open"), "Open", None).clicked() {
+                    if ctx_item(ui, t, icon(t, "folder_open"), "Open", None).ctx_act() {
                         if entry.is_dir { state.navigate(entry.path.clone()); }
                         else { std::process::Command::new("xdg-open").arg(&entry.path).spawn().ok(); }
                         state.panels.close_context_menu();
                     }
                     if entry.is_dir {
-                        if ctx_item(ui, t, icon(t, "folder_open"), "Open in New Tab", None).clicked() {
+                        if ctx_item(ui, t, icon(t, "folder_open"), "Open in New Tab", None).ctx_act() {
                             state.open_in_new_tab(entry.path.clone());
                             state.panels.close_context_menu();
                         }
@@ -84,7 +94,7 @@ pub fn render(
                     if ow_resp.hovered() {
                         ow_hovered = true;
                     }
-                    if ow_resp.clicked() {
+                    if ow_resp.ctx_act() {
                         state.panels.open_open_with(entry.path.clone());
                         state.panels.close_context_menu();
                     }
@@ -98,7 +108,7 @@ pub fn render(
 
                     // Cut
                     if has_selection {
-                        if ctx_item(ui, t, icon(t, "cut"), "Cut", Some("Ctrl+X")).clicked() {
+                        if ctx_item(ui, t, icon(t, "cut"), "Cut", Some("Ctrl+X")).ctx_act() {
                             let paths = state.selected_paths();
                             let count = paths.len();
                             crate::backend::clipboard::clipboard_cut(paths).ok();
@@ -111,7 +121,7 @@ pub fn render(
 
                     // Copy
                     if has_selection {
-                        if ctx_item(ui, t, icon(t, "copy"), "Copy", Some("Ctrl+C")).clicked() {
+                        if ctx_item(ui, t, icon(t, "copy"), "Copy", Some("Ctrl+C")).ctx_act() {
                             let paths = state.selected_paths();
                             let count = paths.len();
                             crate::backend::clipboard::clipboard_copy(paths).ok();
@@ -124,7 +134,7 @@ pub fn render(
 
                     // Duplicate
                     if has_selection {
-                        if ctx_item(ui, t, icon(t, "copy"), "Duplicate", Some("Ctrl+D")).clicked() {
+                        if ctx_item(ui, t, icon(t, "copy"), "Duplicate", Some("Ctrl+D")).ctx_act() {
                             state.duplicate_selected();
                             state.panels.close_context_menu();
                         }
@@ -134,7 +144,7 @@ pub fn render(
 
                     // Paste
                     if has_clipboard {
-                        if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).clicked() {
+                        if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
                             let p = if entry.is_dir { entry.path.clone() } else { state.nav.current_path.clone() };
                             if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                                 let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
@@ -150,7 +160,7 @@ pub fn render(
                     }
 
                     // Copy Path
-                    if ctx_item(ui, t, icon(t, "copy"), "Copy Path", None).clicked() {
+                    if ctx_item(ui, t, icon(t, "copy"), "Copy Path", None).ctx_act() {
                         crate::backend::clipboard::copy_to_system_clipboard_async(entry.path.clone());
                         state.notify.info("Dosya yolu panoya kopyalandı".into());
                         state.panels.close_context_menu();

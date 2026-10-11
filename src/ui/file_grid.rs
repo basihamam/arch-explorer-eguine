@@ -584,23 +584,15 @@ fn grid_item(
 
     // Right click
     if resp.secondary_clicked() {
-        if clicked_on_item {
-            if !state.selection.is_selected(&entry.path) {
-                state.selection.select_only(entry.path.clone());
-            }
-            if let Some(pos) = ui.ctx().pointer_interact_pos() {
-                state.panels.context_menu = Some(ContextMenuState {
-                    x: pos.x, y: pos.y, target: Some(entry.clone()),
-                });
-            }
-        } else {
-            // Secondary-clicked empty margin of card -> background context menu
-            if let Some(pos) = ui.ctx().pointer_interact_pos() {
-                state.panels.context_menu = Some(ContextMenuState {
-                    x: pos.x, y: pos.y, target: None,
-                });
-            }
+        if !state.selection.is_selected(&entry.path) {
+            state.selection.select_only(entry.path.clone());
         }
+        let pos = ui.ctx().pointer_interact_pos()
+            .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()).or(i.pointer.press_origin())))
+            .unwrap_or_else(|| rect.center());
+        state.panels.context_menu = Some(ContextMenuState {
+            x: pos.x, y: pos.y, target: Some(entry.clone()),
+        });
     }
 
     // ── Drag görsel feedback ──────────────────────────────────────────────
@@ -627,6 +619,15 @@ fn grid_item(
         }
         let sources = state.selection.paths();
         let copy = ui.input(|i| i.modifiers.ctrl);
+        // Dış uygulamalar (Firefox, Chrome, chat apps) için anında sistem panosuna da yükle
+        crate::backend::clipboard::copy_files_to_system_clipboard_async(sources.clone(), !copy);
+        // Harici pencereler (Firefox drop target vb.) için arka planda native DnD başlat
+        let ext_sources = sources.clone();
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("arch-explorer-drag")
+                .args(&ext_sources)
+                .spawn();
+        });
         state.drag.start(sources, copy);
     }
 
@@ -1109,22 +1110,15 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 if resp.double_clicked() && !is_renaming && clicked_on_item { open_entry(state, entry); }
 
                 if resp.secondary_clicked() {
-                    if clicked_on_item {
-                        if !state.selection.is_selected_at(&entry.path, idx) {
-                            state.selection.select_only(entry.path.clone());
-                        }
-                        if let Some(pos) = ui.ctx().pointer_interact_pos() {
-                            state.panels.context_menu = Some(ContextMenuState {
-                                x: pos.x, y: pos.y, target: Some(entry.clone()),
-                            });
-                        }
-                    } else {
-                        if let Some(pos) = ui.ctx().pointer_interact_pos() {
-                            state.panels.context_menu = Some(ContextMenuState {
-                                x: pos.x, y: pos.y, target: None,
-                            });
-                        }
+                    if !state.selection.is_selected_at(&entry.path, idx) {
+                        state.selection.select_only(entry.path.clone());
                     }
+                    let pos = ui.ctx().pointer_interact_pos()
+                        .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()).or(i.pointer.press_origin())))
+                        .unwrap_or_else(|| rect.center());
+                    state.panels.context_menu = Some(ContextMenuState {
+                        x: pos.x, y: pos.y, target: Some(entry.clone()),
+                    });
                 }
 
                 // Drag start — if not selected, select it immediately and start dragging
@@ -1134,6 +1128,15 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     }
                     let sources = state.selection.paths();
                     let copy = ui.input(|i| i.modifiers.ctrl);
+                    // Dış uygulamalar (Firefox, Chrome, chat apps) için anında sistem panosuna da yükle
+                    crate::backend::clipboard::copy_files_to_system_clipboard_async(sources.clone(), !copy);
+                    // Harici pencereler (Firefox drop target vb.) için arka planda native DnD başlat
+                    let ext_sources = sources.clone();
+                    std::thread::spawn(move || {
+                        let _ = std::process::Command::new("arch-explorer-drag")
+                            .args(&ext_sources)
+                            .spawn();
+                    });
                     state.drag.start(sources, copy);
                 }
 
