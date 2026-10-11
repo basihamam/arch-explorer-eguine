@@ -743,8 +743,10 @@ impl SearchState {
 // ─── NotifyState ─────────────────────────────────────────────────────────────
 
 pub struct NotifItem {
+    pub id: Option<String>,
     pub kind: NotifyKind,
     pub message: String,
+    pub progress: Option<f32>, // 0.0 ..= 1.0
     pub created: Instant,
     pub duration_ms: u64,
 }
@@ -759,13 +761,57 @@ impl NotifyState {
     }
 
     fn push(&mut self, kind: NotifyKind, message: String, duration_ms: u64) {
-        self.items.push(NotifItem { kind, message, created: Instant::now(), duration_ms });
+        self.items.push(NotifItem {
+            id: None,
+            kind,
+            message,
+            progress: None,
+            created: Instant::now(),
+            duration_ms,
+        });
     }
 
     pub fn success(&mut self, message: String) { self.push(NotifyKind::Success, message, 3000); }
     pub fn error(&mut self, message: String)   { self.push(NotifyKind::Error,   message, 5000); }
     pub fn warning(&mut self, message: String) { self.push(NotifyKind::Warning, message, 4000); }
     pub fn info(&mut self, message: String)    { self.push(NotifyKind::Info,    message, 3000); }
+
+    /// İlerleme çubuklu toast bildirimi oluştur veya var olanı güncelle
+    pub fn update_progress(&mut self, id: &str, message: String, progress: f32) {
+        if let Some(item) = self.items.iter_mut().find(|n| n.id.as_deref() == Some(id)) {
+            item.message = message;
+            item.progress = Some(progress.clamp(0.0, 1.0));
+            item.created = Instant::now(); // Aktarım sürdükçe toast kapanmaz
+            item.duration_ms = 60000;
+        } else {
+            self.items.push(NotifItem {
+                id: Some(id.to_string()),
+                kind: NotifyKind::Info,
+                message,
+                progress: Some(progress.clamp(0.0, 1.0)),
+                created: Instant::now(),
+                duration_ms: 60000,
+            });
+        }
+    }
+
+    /// İlerleme bildirimini tamamla (kapat veya başarıya çevir)
+    pub fn finish_progress(&mut self, id: &str, message: String, success: bool) {
+        if let Some(item) = self.items.iter_mut().find(|n| n.id.as_deref() == Some(id)) {
+            item.kind = if success { NotifyKind::Success } else { NotifyKind::Error };
+            item.message = message;
+            item.progress = None;
+            item.created = Instant::now();
+            item.duration_ms = if success { 3500 } else { 5000 };
+            item.id = None;
+        } else {
+            if success {
+                self.success(message);
+            } else {
+                self.error(message);
+            }
+        }
+    }
 
     /// Süresi dolan toast'ları temizle — her frame'de çağrılır
     pub fn tick(&mut self) {
@@ -1829,8 +1875,8 @@ impl AppState {
                 });
             }
         } else {
-            // Çakışma yok: Dosyaları arka planda aktar, arayüzü asla kilitleme!
-            self.notify.info(format!("{} öğe aktarılıyor…", direct_sources.len()));
+            // Çakışma yok: Dosyaları arka planda aktar ve sağ alttan yüzdeli bildirim göster
+            self.notify.update_progress("file_transfer", format!("{} öğe aktarılıyor…", direct_sources.len()), 0.0);
             self.pending_transfer = Some(TransferRequest {
                 sources: direct_sources,
                 dest_dir,

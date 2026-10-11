@@ -74,6 +74,12 @@ pub enum BackendMsg {
         target_dir: String,
         selected_paths: Vec<String>,
     },
+    // Async dosya aktarım ilerleme durumu (id, mesaj, 0.0..=1.0)
+    TransferProgress {
+        id: String,
+        message: String,
+        progress: f32,
+    },
 }
 
 pub struct ArchExplorer {
@@ -401,16 +407,36 @@ impl ArchExplorer {
     pub fn execute_async_transfer(&self, req: crate::state::TransferRequest) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let total_items = req.sources.len().max(1);
             let dest_is_adb = req.dest_dir.starts_with("adb://");
             let any_src_adb = req.sources.iter().any(|s| s.starts_with("adb://"));
+
+            tx.send(BackendMsg::TransferProgress {
+                id: "file_transfer".into(),
+                message: format!("Aktarım başlıyor… (0/{})", total_items),
+                progress: 0.05,
+            }).ok();
 
             if dest_is_adb || any_src_adb {
                 let mut transferred = 0;
                 let mut err_msg = String::new();
                 let mut created_paths = Vec::new();
 
-                for src in &req.sources {
+                for (idx, src) in req.sources.iter().enumerate() {
                     let src_is_adb = src.starts_with("adb://");
+
+                    let current_idx = idx + 1;
+                    let prog = (current_idx as f32 / total_items as f32).clamp(0.05, 0.98);
+                    let fname = std::path::Path::new(src)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "öğe".to_string());
+
+                    tx.send(BackendMsg::TransferProgress {
+                        id: "file_transfer".into(),
+                        message: format!("{}/{} aktarılıyor: {}", current_idx, total_items, fname),
+                        progress: prog,
+                    }).ok();
 
                     if !src_is_adb && dest_is_adb {
                         // Local -> ADB (adb push)
@@ -421,9 +447,6 @@ impl ArchExplorer {
                                     if !req.copy {
                                         let _ = std::fs::remove_file(src).or_else(|_| std::fs::remove_dir_all(src));
                                     }
-                                    let fname = std::path::Path::new(src)
-                                        .file_name().map(|n| n.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| "file".to_string());
                                     let full_dev = format!("{}/{}", dev_dir.trim_end_matches('/'), fname);
                                     created_paths.push(crate::backend::adb::make_adb_path(&serial, &full_dev));
                                 }
@@ -441,9 +464,6 @@ impl ArchExplorer {
                                     if !req.copy {
                                         let _ = crate::backend::adb::adb_delete(&serial, &dev_path);
                                     }
-                                    let fname = std::path::Path::new(&dev_path)
-                                        .file_name().map(|n| n.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| "file".to_string());
                                     let local_target = format!("{}/{}", req.dest_dir.trim_end_matches('/'), fname);
                                     created_paths.push(local_target);
                                 }
@@ -459,9 +479,6 @@ impl ArchExplorer {
                             crate::backend::adb::parse_adb_path(&req.dest_dir),
                         ) {
                             if src_serial == dst_serial {
-                                let fname = std::path::Path::new(&src_dev_p)
-                                    .file_name().map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "file".to_string());
                                 let full_dst = format!("{}/{}", dst_dev_p.trim_end_matches('/'), fname);
                                 let res = if req.copy {
                                     let esc_src = src_dev_p.replace('\'', "'\\''");
@@ -512,19 +529,29 @@ impl ArchExplorer {
                 return;
             }
 
-            // Yerel dosya aktarımı — arka planda
+            // Yerel dosya aktarımı — arka planda yüzdeli bildirim ile
             let mut undos = Vec::new();
             let mut created_paths = Vec::new();
             let mut direct_count = 0;
             let mut err_msg = String::new();
 
-            for src in &req.sources {
+            for (idx, src) in req.sources.iter().enumerate() {
+                let current_idx = idx + 1;
+                let prog = (current_idx as f32 / total_items as f32).clamp(0.05, 0.98);
+
                 let src_path = std::path::Path::new(src);
                 if !src_path.exists() { continue; }
                 let fname = match src_path.file_name() {
                     Some(n) => n.to_string_lossy().to_string(),
                     None => continue,
                 };
+
+                tx.send(BackendMsg::TransferProgress {
+                    id: "file_transfer".into(),
+                    message: format!("{}/{} aktarılıyor: {}", current_idx, total_items, fname),
+                    progress: prog,
+                }).ok();
+
                 let dst = format!("{}/{}", req.dest_dir.trim_end_matches('/'), fname);
 
                 match crate::state::execute_transfer_item(src, &dst, req.copy, crate::state::ConflictChoice::Replace) {
@@ -781,16 +808,17 @@ impl ArchExplorer {
                     self.state.open_in_new_tab(path);
                     self.state.notify.info("Mevcut oturumda yeni sekme açıldı".into());
                 }
+                BackendMsg::TransferProgress { id, message, progress } => {
+                    self.state.notify.update_progress(&id, message, progress);
+                }
                 BackendMsg::TransferDone { success, message, target_dir, selected_paths } => {
+                    self.state.notify.finish_progress("file_transfer", message, success);
                     if success {
-                        self.state.notify.success(message);
                         let cur = self.state.nav.current_path.trim_end_matches('/');
                         let tgt = target_dir.trim_end_matches('/');
                         if cur == tgt && !selected_paths.is_empty() {
                             self.state.select_paths_and_queue(selected_paths);
                         }
-                    } else {
-                        self.state.notify.error(message);
                     }
                     self.state.refresh();
                 }
