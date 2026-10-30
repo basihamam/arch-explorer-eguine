@@ -955,8 +955,20 @@ impl eframe::App for ArchExplorer {
         // 7. UI render
         self.render_ui(ctx);
 
-        // 8. Sürekli yenile — inotify eventleri için gerekli
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        // 8. Akıllı yenileme (Smart repaint) — animasyon/işlem varken akıcı (~30 FPS), boştayken GPU/CPU tasarrufu
+        let is_active = self.state.dir.is_loading
+            || self.state.terminal.is_running
+            || self.state.preview_loading.is_some()
+            || !self.state.notify.items.is_empty()
+            || self.state.drag.dragging
+            || self.state.media_player.is_playing
+            || self.state.pending_search_changed.is_some();
+
+        if is_active {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -1256,10 +1268,7 @@ impl ArchExplorer {
         crate::ui::titlebar::render(ctx, t, &mut self.state);
 
         // ── Top TabBar (under titlebar, full window width) ───────────────
-        let show_tab_bar = self.state.dual_pane || self.state.tabs.tabs.len() > 1;
-        if show_tab_bar {
-            crate::ui::tab_bar::render_top_panel(ctx, t, &mut self.state);
-        }
+        crate::ui::tab_bar::render_top_panel(ctx, t, &mut self.state);
 
         // ── Ana layout: sidebar | content | preview ──────────────────────
         egui::SidePanel::left("sidebar")

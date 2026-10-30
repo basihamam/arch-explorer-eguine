@@ -202,12 +202,19 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState, path: &str) {
                                         row_str(ui, t, "Uzantı", &format!(".{}", ext.to_string_lossy().to_lowercase()));
                                     }
 
-                                    let mime = std::process::Command::new("file")
-                                        .args(["--brief", "--mime-type", path])
-                                        .output().ok()
-                                        .and_then(|o| String::from_utf8(o.stdout).ok())
-                                        .map(|s| s.trim().to_string())
-                                        .unwrap_or_else(|| if is_dir { "inode/directory".into() } else { "unknown".into() });
+                                    let mime_id = egui::Id::new("props_mime_cache").with(path);
+                                    let mime: String = ui.ctx().data_mut(|d| {
+                                        d.get_temp(mime_id).unwrap_or_else(|| {
+                                            let detected = std::process::Command::new("file")
+                                                .args(["--brief", "--mime-type", path])
+                                                .output().ok()
+                                                .and_then(|o| String::from_utf8(o.stdout).ok())
+                                                .map(|s| s.trim().to_string())
+                                                .unwrap_or_else(|| if is_dir { "inode/directory".into() } else { "unknown".into() });
+                                            d.insert_temp(mime_id, detected.clone());
+                                            detected
+                                        })
+                                    });
                                     row_str(ui, t, "MIME Türü", &mime);
                                 }
                             });

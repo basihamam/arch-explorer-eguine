@@ -31,14 +31,14 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             // ── Nav Buttons ───────────────────────────────────────────────
             nav_btn(ui, t, icon(t, "back"), state.nav.can_go_back(), || {
                 state.go_back();
-            });
+            }).on_hover_text("Back (Alt+Left)");
             nav_btn(ui, t, icon(t, "forward"), state.nav.can_go_forward(), || {
                 state.go_forward();
-            });
+            }).on_hover_text("Forward (Alt+Right)");
             nav_btn(ui, t, icon(t, "up"), state.nav.can_go_up(), || {
                 state.go_up();
-            });
-            if nav_btn(ui, t, icon(t, "refresh"), true, || {}).clicked() {
+            }).on_hover_text("Parent Directory (Alt+Up)");
+            if nav_btn(ui, t, icon(t, "refresh"), true, || {}).on_hover_text("Refresh (F5)").clicked() {
                 state.refresh();
             }
 
@@ -128,7 +128,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             if state.search.active {
                 search_bar(ui, t, state);
             } else {
-                if nav_btn(ui, t, icon(t, "search"), true, || {}).clicked() {
+                if nav_btn(ui, t, icon(t, "search"), true, || {}).on_hover_text("Search (Ctrl+F)").clicked() {
                     state.search.active = true;
                 }
             }
@@ -137,10 +137,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                 // ── Preview Toggle (F3) ───────────────────────────────────
                 let preview_active = state.panels.active == crate::state::ActivePanel::Preview;
                 let preview_color = if preview_active { c.accent() } else { c.text_hint() };
-                let preview_resp = icon_btn(ui, t, icon(t, "preview"), preview_color);
-                if preview_resp.hovered() {
-                    egui::show_tooltip_text(ui.ctx(), ui.layer_id(), egui::Id::new("preview_tooltip"), "Preview (F3)");
-                }
+                let preview_resp = icon_btn(ui, t, icon(t, "preview"), preview_color).on_hover_text("Preview (F3)");
                 if preview_resp.clicked() {
                     if preview_active {
                         state.media_player.stop();
@@ -152,10 +149,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
 
                 // ── Dual Pane Toggle (Ctrl+P) ─────────────────────────────
                 let dp_color = if state.dual_pane { c.accent() } else { c.text_hint() };
-                let dp_resp  = icon_btn(ui, t, "\u{f0db}", dp_color);
-                if dp_resp.hovered() {
-                    egui::show_tooltip_text(ui.ctx(), ui.layer_id(), egui::Id::new("dp_tooltip"), "Dual Pane (Ctrl+P)");
-                }
+                let dp_resp  = icon_btn(ui, t, "\u{f0db}", dp_color).on_hover_text("Dual Pane (Ctrl+P)");
                 if dp_resp.clicked() {
                     if state.dual_pane { state.close_dual_pane(); }
                     else               { state.open_dual_pane(); }
@@ -163,7 +157,10 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
 
                 // ── Hidden toggle ─────────────────────────────────────────
                 let hidden_color = if state.dir.show_hidden { c.accent() } else { c.text_hint() };
-                if icon_btn(ui, t, icon(t, if state.dir.show_hidden { "visible" } else { "hidden" }), hidden_color).clicked() {
+                if icon_btn(ui, t, icon(t, if state.dir.show_hidden { "visible" } else { "hidden" }), hidden_color)
+                    .on_hover_text(if state.dir.show_hidden { "Hide Hidden Files (Ctrl+H)" } else { "Show Hidden Files (Ctrl+H)" })
+                    .clicked()
+                {
                     state.dir.show_hidden = !state.dir.show_hidden;
                     state.refresh();
                 }
@@ -182,10 +179,10 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                     c.text_hint()
                 };
 
-                if icon_btn(ui, t, icon(t, "list"), list_color).clicked() {
+                if icon_btn(ui, t, icon(t, "list"), list_color).on_hover_text("List View (Ctrl+2)").clicked() {
                     state.set_view_mode_for_current_dir(ViewMode::List);
                 }
-                if icon_btn(ui, t, icon(t, "grid"), grid_color).clicked() {
+                if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
                     state.set_view_mode_for_current_dir(ViewMode::Grid);
                 }
             });

@@ -258,7 +258,7 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
 }
 
 const TEMPLATES: &[(&str, &str)] = &[
-    ("Numbered",      "{date}_{n}{ext}"),
+    ("Numbered",      "{n}_{name}{ext}"),
     ("Name + #",      "{name}_{n}{ext}"),
     ("Date + #",      "{date}_{n}{ext}"),
     ("UPPERCASE",     "{upper}{ext}"),

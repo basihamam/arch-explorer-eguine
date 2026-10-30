@@ -64,67 +64,67 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState, tx: &Sender<Backe
     }
 
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-        ui.add_space(sp.xs);
+        egui::Frame {
+            inner_margin: Margin::symmetric(sp.xl, sp.xs),
+            ..Default::default()
+        }.show(ui, |ui| {
+            // ── Android / ADB Devices ─────────────────────────────────────────
+            if !adb_devices.is_empty() {
+                section_label(ui, t, "Android & Portable Devices");
+                ui.add_space(sp.sm);
 
-        // ── Android / ADB Devices ─────────────────────────────────────────
-        if !adb_devices.is_empty() {
-            section_label(ui, t, "Android & Portable Devices");
-            ui.add_space(sp.sm);
+                let avail_w = ui.available_width();
+                let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
+                let card_h  = 120.0_f32;
 
-            let avail_w = ui.available_width() - sp.xl * 2.0;
-            let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
-            let card_h  = 120.0_f32;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
+                    for adb_dev in &adb_devices {
+                        adb_card(ui, t, state, adb_dev, card_w, card_h);
+                    }
+                });
+                ui.add_space(sp.lg);
+            }
 
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(sp.xl);
-                ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
-                for adb_dev in &adb_devices {
-                    adb_card(ui, t, state, adb_dev, card_w, card_h);
-                }
-            });
-            ui.add_space(sp.lg);
-        }
+            // ── Mounted Drives ────────────────────────────────────────────────
+            if !drives.is_empty() {
+                section_label(ui, t, "Mounted");
+                ui.add_space(sp.sm);
 
-        // ── Mounted Drives ────────────────────────────────────────────────
-        if !drives.is_empty() {
-            section_label(ui, t, "Mounted");
-            ui.add_space(sp.sm);
+                // Grid layout: 3 kart yan yana
+                let avail_w = ui.available_width();
+                let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
+                let card_h  = 120.0_f32;
 
-            // Grid layout: 3 kart yan yana
-            let avail_w = ui.available_width() - sp.xl * 2.0;
-            let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
-            let card_h  = 120.0_f32;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
+                    for drive in &drives {
+                        drive_card(ui, t, state, drive, card_w, card_h, tx);
+                    }
+                });
+                ui.add_space(sp.lg);
+            }
 
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(sp.xl);
-                ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
-                for drive in &drives {
-                    drive_card(ui, t, state, drive, card_w, card_h, tx);
-                }
-            });
-            ui.add_space(sp.lg);
-        }
+            // ── Unmounted Devices ─────────────────────────────────────────────
+            let unmounted: Vec<_> = blocks.iter().filter(|b| !b.is_mounted).collect();
+            if !unmounted.is_empty() {
+                section_label(ui, t, "Unmounted");
+                ui.add_space(sp.sm);
 
-        // ── Unmounted Devices ─────────────────────────────────────────────
-        let unmounted: Vec<_> = blocks.iter().filter(|b| !b.is_mounted).collect();
-        if !unmounted.is_empty() {
-            section_label(ui, t, "Unmounted");
-            ui.add_space(sp.sm);
+                let avail_w = ui.available_width();
+                let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
+                let card_h  = 100.0_f32;
 
-            let avail_w = ui.available_width() - sp.xl * 2.0;
-            let card_w  = ((avail_w - sp.md * 2.0) / 3.0).max(180.0);
-            let card_h  = 100.0_f32;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
+                    for dev in &unmounted {
+                        unmounted_card(ui, t, state, dev, card_w, card_h);
+                    }
+                });
+            }
 
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(sp.xl);
-                ui.spacing_mut().item_spacing = Vec2::splat(sp.md);
-                for dev in &unmounted {
-                    unmounted_card(ui, t, state, dev, card_w, card_h);
-                }
-            });
-        }
-
-        ui.add_space(sp.xl);
+            ui.add_space(sp.xl);
+        });
     });
 }
 
@@ -175,13 +175,13 @@ fn drive_card(
 
         // NTFS badge
         if is_ntfs {
-            let bw = 36.0_f32; let bh = 14.0_f32;
+            let bw = 42.0_f32; let bh = 16.0_f32;
             let br = Rect::from_min_size(
                 rect.min + Vec2::new(pad + 26.0, pad + 6.0), Vec2::new(bw, bh));
             ui.painter().rect_filled(br, Rounding::same(4.0),
                 Color32::from_rgba_unmultiplied(0, 120, 215, 40));
             ui.painter().text(br.center(), Align2::CENTER_CENTER, "NTFS",
-                FontId::new(8.0, FontFamily::Proportional),
+                FontId::new(10.0, FontFamily::Proportional),
                 Color32::from_rgb(0, 120, 215));
         }
 
@@ -477,10 +477,7 @@ fn adb_card(
 
 fn section_label(ui: &mut Ui, t: &AexTheme, label: &str) {
     let c = &t.colors;
-    ui.horizontal(|ui| {
-        ui.add_space(t.spacing.xl);
-        ui.label(RichText::new(label).color(c.text_hint()).size(t.typography.size_xs).strong());
-    });
+    ui.label(RichText::new(label).color(c.text_hint()).size(t.typography.size_xs).strong());
 }
 
 fn truncate(s: &str, max: usize) -> String {

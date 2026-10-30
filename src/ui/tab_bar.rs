@@ -337,16 +337,23 @@ pub fn render_tab_half(
 
             // 6. Close button ✕
             if tabs.len() > 1 && (resp.hovered() || (is_active_tab && is_pane_active)) {
-                let close_size = 14.0_f32;
+                let close_size = 20.0_f32;
                 let close_rect = Rect::from_center_size(
-                    Pos2::new(rect.right() - 10.0, rect.center().y),
+                    Pos2::new(rect.right() - 14.0, rect.center().y),
                     Vec2::splat(close_size),
                 );
                 let close_resp = ui.interact(
                     close_rect,
                     ui.id().with(format!("close_{}_{}", if is_left { "l" } else { "r" }, i)),
                     Sense::click(),
-                );
+                ).on_hover_text("Close Tab (Ctrl+W)");
+                if close_resp.hovered() {
+                    ui.painter().rect_filled(
+                        close_rect.shrink(2.0),
+                        Rounding::same(t.shape.radius_sm),
+                        Color32::from_rgba_unmultiplied(c.danger().r(), c.danger().g(), c.danger().b(), 45),
+                    );
+                }
                 let close_color = if close_resp.hovered() {
                     c.danger()
                 } else {
@@ -356,7 +363,7 @@ pub fn render_tab_half(
                     close_rect.center(),
                     Align2::CENTER_CENTER,
                     "✕",
-                    FontId::new(9.0, FontFamily::Proportional),
+                    FontId::new(10.0, FontFamily::Proportional),
                     close_color,
                 );
                 if close_resp.clicked() && action.is_none() {
@@ -385,6 +392,7 @@ pub fn render_tab_half(
 
         // ── + (New tab) Button at the FAR RIGHT of this half ──
         let (plus_rect, plus_resp) = ui.allocate_exact_size(Vec2::new(plus_w, tab_h), Sense::click());
+        let plus_resp = plus_resp.on_hover_text("New Tab (Ctrl+T)");
         if ui.is_rect_visible(plus_rect) {
             // Left border for + button
             ui.painter().vline(

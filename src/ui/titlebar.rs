@@ -38,13 +38,26 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
             );
 
             let center_w = 560.0_f32;
-            let max_center_x = (full_rect.right() - right_w - center_w - 6.0).max(120.0);
-            let ideal_center_x = full_rect.center().x - (center_w / 2.0);
-            let center_x = ideal_center_x.min(max_center_x).max(120.0);
-            let center_rect = Rect::from_min_size(
-                Pos2::new(center_x, full_rect.top()),
-                Vec2::new(center_w, h),
-            );
+            let left_w = 140.0_f32;
+            let available_center = (full_rect.width() - left_w - right_w - 24.0).max(0.0);
+            let actual_center_w = center_w.min(available_center);
+            let show_center = actual_center_w >= 140.0;
+            let center_x = if show_center {
+                let ideal_center_x = full_rect.center().x - (actual_center_w / 2.0);
+                let min_x = left_w + 12.0;
+                let max_x = full_rect.right() - right_w - actual_center_w - 6.0;
+                ideal_center_x.clamp(min_x, max_x.max(min_x))
+            } else {
+                -1000.0
+            };
+            let center_rect = if show_center {
+                Rect::from_min_size(
+                    Pos2::new(center_x, full_rect.top()),
+                    Vec2::new(actual_center_w, h),
+                )
+            } else {
+                Rect::NOTHING
+            };
 
             // Drag area for window movement — only if not hovering buttons
             let p_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
@@ -85,52 +98,54 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
             });
 
             // ── Center: Action buttons (Disks, Network, Panes, Plugins, Commands, Settings) ──
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(center_rect), |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+            if show_center {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(center_rect), |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
 
-                    // Disks
-                    let disks_active = state.panels.active == crate::state::ActivePanel::Mount;
-                    if action_btn(ui, t, action_icon(t, "disks"), "Disks", disks_active).clicked() {
-                        if disks_active { state.panels.close(); }
-                        else { state.panels.open_mount(); }
-                    }
+                        // Disks
+                        let disks_active = state.panels.active == crate::state::ActivePanel::Mount;
+                        if action_btn(ui, t, action_icon(t, "disks"), "Disks", disks_active).clicked() {
+                            if disks_active { state.panels.close(); }
+                            else { state.panels.open_mount(); }
+                        }
 
-                    // Network
-                    let net_active = state.panels.active == crate::state::ActivePanel::Network;
-                    if action_btn(ui, t, action_icon(t, "network"), "Network", net_active).clicked() {
-                        if net_active { state.panels.close(); }
-                        else { state.panels.open_network(); }
-                    }
+                        // Network
+                        let net_active = state.panels.active == crate::state::ActivePanel::Network;
+                        if action_btn(ui, t, action_icon(t, "network"), "Network", net_active).clicked() {
+                            if net_active { state.panels.close(); }
+                            else { state.panels.open_network(); }
+                        }
 
-                    // Panes (Dual Pane toggle)
-                    let panes_active = state.dual_pane;
-                    if action_btn(ui, t, action_icon(t, "panes"), "Panes", panes_active).clicked() {
-                        if state.dual_pane { state.close_dual_pane(); }
-                        else { state.open_dual_pane(); }
-                    }
+                        // Panes (Dual Pane toggle)
+                        let panes_active = state.dual_pane;
+                        if action_btn(ui, t, action_icon(t, "panes"), "Panes", panes_active).clicked() {
+                            if state.dual_pane { state.close_dual_pane(); }
+                            else { state.open_dual_pane(); }
+                        }
 
-                    // Plugins
-                    let plugins_active = false;
-                    if action_btn(ui, t, action_icon(t, "plugins"), "Plugins", plugins_active).clicked() {
-                        state.notify.info("No external plugins configured".to_string());
-                    }
+                        // Plugins
+                        let plugins_active = false;
+                        if action_btn(ui, t, action_icon(t, "plugins"), "Plugins", plugins_active).clicked() {
+                            state.notify.info("No external plugins configured".to_string());
+                        }
 
-                    // Commands
-                    let cmd_active = state.panels.active == crate::state::ActivePanel::Commands;
-                    if action_btn(ui, t, action_icon(t, "commands"), "Commands", cmd_active).clicked() {
-                        if cmd_active { state.panels.close(); }
-                        else { state.panels.open_commands(); }
-                    }
+                        // Commands
+                        let cmd_active = state.panels.active == crate::state::ActivePanel::Commands;
+                        if action_btn(ui, t, action_icon(t, "commands"), "Commands", cmd_active).clicked() {
+                            if cmd_active { state.panels.close(); }
+                            else { state.panels.open_commands(); }
+                        }
 
-                    // Settings
-                    let set_active = state.panels.active == crate::state::ActivePanel::Settings;
-                    if action_btn(ui, t, action_icon(t, "settings"), "Settings", set_active).clicked() {
-                        if set_active { state.panels.close(); }
-                        else { state.panels.open_settings(); }
-                    }
+                        // Settings
+                        let set_active = state.panels.active == crate::state::ActivePanel::Settings;
+                        if action_btn(ui, t, action_icon(t, "settings"), "Settings", set_active).clicked() {
+                            if set_active { state.panels.close(); }
+                            else { state.panels.open_settings(); }
+                        }
+                    });
                 });
-            });
+            }
 
             // ── Right: Window Controls ─────────────────────────────────────
             let right_w = 90.0_f32;
@@ -144,16 +159,19 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
 
                     // Minimize
-                    if window_ctrl_btn(ui, t, "—", c.text_hint(), false).clicked() {
+                    if window_ctrl_btn(ui, t, "—", c.text_hint(), false).on_hover_text("Minimize").clicked() {
                         ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
                     }
                     // Maximize
                     let is_max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                    if window_ctrl_btn(ui, t, if is_max { "❐" } else { "□" }, c.text_hint(), false).clicked() {
+                    if window_ctrl_btn(ui, t, if is_max { "❐" } else { "□" }, c.text_hint(), false)
+                        .on_hover_text(if is_max { "Restore" } else { "Maximize" })
+                        .clicked()
+                    {
                         ctx.send_viewport_cmd(ViewportCommand::Maximized(!is_max));
                     }
                     // Close
-                    if window_ctrl_btn(ui, t, "✕", c.danger(), true).clicked() {
+                    if window_ctrl_btn(ui, t, "✕", c.danger(), true).on_hover_text("Close (Alt+F4)").clicked() {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 });

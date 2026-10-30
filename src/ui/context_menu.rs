@@ -32,7 +32,7 @@ pub fn render(
     let menu_w  = 230.0_f32;
 
     // item sayısına göre yükseklik
-    let item_count = if cm.target.is_some() { 14.0 } else { 5.0 };
+    let item_count = if cm.target.is_some() { 20.0 } else { 6.0 };
     let menu_h  = ih * item_count + sp.sm * 2.0;
     let x = cm.x.min(screen.right() - menu_w - 8.0);
     let y = cm.y.min(screen.bottom() - menu_h - 8.0);
@@ -53,7 +53,7 @@ pub fn render(
         c.bg_mantle()
     };
 
-    egui::Area::new(Id::new("ctx_menu_area"))
+    let area_resp = egui::Area::new(Id::new("ctx_menu_area"))
         .fixed_pos(Pos2::new(x, y))
         .order(Order::Tooltip)
         .show(ctx, |ui| {
@@ -261,10 +261,11 @@ pub fn render(
                     }
 
                     if is_other_open {
-                        // Context menu'nun sol tarafında aç
+                        // Context menu'nun sol veya sağ tarafında aç (ekran taşmasını engelle)
                         let cm_rect = ui.min_rect();
                         let sub_w   = 220.0_f32;
-                        let sub_x   = cm_rect.min.x - sub_w - 4.0;
+                        let is_other_left = cm_rect.min.x >= sub_w + 8.0;
+                        let sub_x   = if is_other_left { cm_rect.min.x - sub_w - 4.0 } else { cm_rect.max.x + 4.0 };
                         let sub_y   = other_resp.rect.min.y;
 
                         egui::Area::new(egui::Id::new("ctx_other_panel"))
@@ -541,13 +542,21 @@ pub fn render(
     if ctx.input(|i| i.pointer.any_click()) {
         if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
             let is_other_open: bool = ctx.data_mut(|d| d.get_temp(egui::Id::new("ctx_other_open")).unwrap_or(false));
-            let mut in_any_menu = menu_rect.contains(pos);
+            let menu_rect_actual = area_resp.response.rect.union(menu_rect);
+            let mut in_any_menu = menu_rect_actual.contains(pos);
             if is_other_open {
-                // Other sub_rect sol tarafta:
-                let other_sub_rect = Rect::from_min_size(
-                    Pos2::new(menu_rect.min.x - 224.0, menu_rect.min.y),
-                    Vec2::new(224.0, 360.0)
-                );
+                let is_other_left = menu_rect_actual.min.x >= 228.0;
+                let other_sub_rect = if is_other_left {
+                    Rect::from_min_size(
+                        Pos2::new(menu_rect_actual.min.x - 224.0, menu_rect_actual.min.y),
+                        Vec2::new(224.0, 360.0),
+                    )
+                } else {
+                    Rect::from_min_size(
+                        Pos2::new(menu_rect_actual.max.x + 4.0, menu_rect_actual.min.y),
+                        Vec2::new(224.0, 360.0),
+                    )
+                };
                 if other_sub_rect.contains(pos) {
                     in_any_menu = true;
                 }

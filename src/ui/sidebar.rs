@@ -348,87 +348,6 @@ fn bookmark_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, bm: &Bookmark)
     });
 }
 
-// ── Drive item (mounted) ───────────────────────────────────────────────────
-
-fn drive_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, drive: &crate::backend::fs_ops::DriveInfo) {
-    let c  = &t.colors;
-    let sp = &t.spacing;
-    let s  = &t.shape;
-
-    let is_active = state.nav.current_path.starts_with(&drive.mount_point);
-
-    let resp = sidebar_row(ui, t, is_active);
-    let rect = resp.rect;
-
-    // Drive icon
-    let drive_icon = if drive.fs_type.contains("ntfs") || drive.fs_type.contains("vfat") {
-        icon(t, "ntfs")
-    } else if drive.mount_point == "/" {
-        icon(t, "server")
-    } else {
-        icon(t, "drive")
-    };
-
-    ui.painter().text(
-        rect.min + Vec2::new(sp.md + 2.0, rect.height() / 2.0),
-        Align2::LEFT_CENTER,
-        drive_icon,
-        FontId::new(t.icons.size_sm, FontFamily::Monospace),
-        if is_active { c.accent() } else { c.text_secondary() },
-    );
-
-    // Name
-    ui.painter().text(
-        rect.min + Vec2::new(sp.md + 22.0, rect.height() / 2.0 - 4.0),
-        Align2::LEFT_CENTER,
-        &drive.name,
-        FontId::new(t.typography.size_sm, FontFamily::Proportional),
-        if is_active { c.text_primary() } else { c.text_secondary() },
-    );
-
-    // Usage bar
-    let bar_rect = Rect::from_min_size(
-        rect.min + Vec2::new(sp.md + 22.0, rect.height() / 2.0 + 5.0),
-        Vec2::new(100.0, 3.0),
-    );
-    let used_frac = if drive.total > 0 { drive.used as f32 / drive.total as f32 } else { 0.0 };
-    let bar_color = if used_frac > 0.9 { c.danger() } else if used_frac > 0.75 { c.warning() } else { c.accent() };
-
-    ui.painter().rect_filled(bar_rect, Rounding::same(1.5), c.bg_surface1());
-    ui.painter().rect_filled(
-        Rect::from_min_size(bar_rect.min, Vec2::new(bar_rect.width() * used_frac, bar_rect.height())),
-        Rounding::same(1.5),
-        bar_color,
-    );
-
-    // Drag drop onto drive item
-    let pointer_over_drive = ui.ctx().pointer_interact_pos()
-        .or_else(|| ui.ctx().pointer_hover_pos())
-        .map(|p| rect.contains(p))
-        .unwrap_or(false);
-
-    if state.drag.dragging && pointer_over_drive {
-        ui.painter().rect_filled(rect, Rounding::same(s.radius_sm),
-            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 40));
-        ui.painter().rect_stroke(rect, Rounding::same(s.radius_sm), Stroke::new(1.5, c.accent()));
-        if ui.input(|i| i.pointer.any_released()) {
-            let dest = drive.mount_point.clone();
-            let sources = state.drag.sources.clone();
-            let copy = state.drag.copy_mode;
-            state.drag.cancel();
-            state.start_transfer(sources, dest, copy);
-        }
-    }
-
-    if resp.clicked() {
-        // DevicesView bir overlay değil — CentralPanel'ı tam kaplıyor.
-        // navigate() path'i güncelliyor ama panels.active'i sıfırlamıyor,
-        // bu yüzden file grid yerine DevicesView görünmeye devam ediyor.
-        state.panels.close();
-        state.navigate(drive.mount_point.clone());
-    }
-}
-
 // ── Device item (mounted or unmounted) matching screenshot ───────────────────
 
 fn device_sidebar_item(
@@ -755,43 +674,6 @@ fn adb_sidebar_item(
     }
 }
 
-// ── Unmounted device item ──────────────────────────────────────────────────
-
-fn unmounted_device_item(
-    ui: &mut Ui,
-    t: &AexTheme,
-    state: &mut AppState,
-    dev: &crate::backend::mounts::BlockDevice,
-) {
-    let c  = &t.colors;
-    let sp = &t.spacing;
-
-    let resp = sidebar_row(ui, t, false);
-    let rect = resp.rect;
-
-    ui.painter().text(
-        rect.min + Vec2::new(sp.md + 2.0, rect.height() / 2.0),
-        Align2::LEFT_CENTER,
-        icon(t, if dev.fs_type.contains("ntfs") { "ntfs" } else { "drive" }),
-        FontId::new(t.icons.size_sm, FontFamily::Monospace),
-        c.text_disabled(),
-    );
-
-    let fs_str = if dev.fs_type.is_empty() { "?" } else { &dev.fs_type };
-    let label = format!("{} ({})", dev.name, fs_str);
-    ui.painter().text(
-        rect.min + Vec2::new(sp.md + 22.0, rect.height() / 2.0),
-        Align2::LEFT_CENTER,
-        &label,
-        FontId::new(t.typography.size_sm, FontFamily::Proportional),
-        c.text_hint(),
-    );
-
-    if resp.clicked() {
-        state.panels.open_mount();
-    }
-}
-
 // ── Quick item ─────────────────────────────────────────────────────────────
 
 fn quick_item(
@@ -846,7 +728,10 @@ fn quick_item(
     // Drop files onto quick item (e.g. Home, Trash)
     if is_drag_over && ui.input(|i| i.pointer.any_released()) {
         if let Some(dest) = drop_target {
-            if dest == "trash:" || dest == "trash:///" {
+            let is_trash = dest == "trash:" || dest == "trash:///"
+                || dest == crate::backend::fs_ops::resolve_trash_dir().to_string_lossy().as_ref()
+                || dest.contains("/.local/share/Trash");
+            if is_trash {
                 let paths = state.drag.sources.clone();
                 state.drag.cancel();
                 for p in paths {

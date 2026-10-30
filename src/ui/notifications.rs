@@ -18,11 +18,13 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
     let toast_h = 48.0;
     let gap     = 8.0;
     let margin  = 16.0;
+    let mut current_bottom = screen.bottom() - margin;
 
     for (i, notif) in state.notify.items.iter().enumerate() {
         let has_prog = notif.progress.is_some();
         let cur_toast_h = if has_prog { 62.0_f32 } else { toast_h };
-        let y = screen.bottom() - margin - (cur_toast_h + gap) * (i + 1) as f32;
+        let y = current_bottom - cur_toast_h;
+        current_bottom = y - gap;
 
         let (icon_str, accent) = match notif.kind {
             NotifyKind::Success => (super::icon(t, "success"), c.success()),
@@ -91,13 +93,15 @@ pub fn render(ctx: &Context, t: &AexTheme, state: &mut AppState) {
                             );
 
                             // Message
-                            ui.label(
-                                RichText::new(&notif.message)
-                                    .color(Color32::from_rgba_unmultiplied(
-                                        c.text_primary().r(), c.text_primary().g(), c.text_primary().b(),
-                                        (255.0 * alpha) as u8
-                                    ))
-                                    .size(t.typography.size_sm)
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&notif.message)
+                                        .color(Color32::from_rgba_unmultiplied(
+                                            c.text_primary().r(), c.text_primary().g(), c.text_primary().b(),
+                                            (255.0 * alpha) as u8
+                                        ))
+                                        .size(t.typography.size_sm)
+                                ).wrap()
                             );
                         });
 

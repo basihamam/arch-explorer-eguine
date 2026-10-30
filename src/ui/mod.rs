@@ -14,7 +14,6 @@ pub mod notifications;
 pub mod devices_view;
 pub mod commands_panel;
 pub mod properties;
-pub mod properties_panel;
 pub mod network;
 pub mod open_with;
 pub mod terminal_panel;
@@ -69,6 +68,7 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "grid"         => "\u{f00a}",
             "visible"      => "\u{f06e}",
             "hidden"       => "\u{f070}",
+            "check" | "success" => "\u{f00c}",
             "ntfs"         => "\u{f17a}", //  FontAwesome Windows icon
             "windows"      => "\u{f17a}",
             "phone"        => "\u{f10b}", //  Mobile phone
@@ -102,6 +102,7 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "android"      => "🤖",
             "copy"         => "📋",
             "rename"       => "✏",
+            "check" | "success" => "✓",
             _              => "📄",
         },
         IconStyle::Minimal => match name {
@@ -121,6 +122,7 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "up"          => "[^]",
             "ntfs"        => "[W]",
             "windows"     => "[W]",
+            "check" | "success" => "[V]",
             _             => "[ ]",
         },
     }
