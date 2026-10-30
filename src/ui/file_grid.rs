@@ -39,12 +39,21 @@ pub fn render_tagged(ui: &mut Ui, t: &AexTheme, state: &mut AppState, pane_tag: 
         return;
     }
 
+    if state.drag.dragging {
+        state.drag.target_dir = None;
+    }
+
     // Render — mode'a göre
     match state.view_mode {
         ViewMode::Grid    => grid_view(ui, t, state, &entries, pane_tag),
         ViewMode::List    => list_view(ui, t, state, &entries, pane_tag),
         ViewMode::Compact => compact_view(ui, t, state, &entries, pane_tag),
         ViewMode::Columns => list_view(ui, t, state, &entries, pane_tag), // TODO
+    }
+
+    // Cancel drag if mouse was released outside any target
+    if state.drag.dragging && ui.input(|i| i.pointer.any_released()) {
+        state.drag.cancel();
     }
 }
 
@@ -135,22 +144,24 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let pressed_on_item = press_origin.map(|origin| prev_rects.iter().any(|hit| hit.contains(origin))).unwrap_or(false);
 
             let is_resizing_preview: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_preview")).unwrap_or(false));
+            let is_resizing_column: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_column")).unwrap_or(false));
             let is_preview_open = state.panels.active == ActivePanel::Preview;
             let scroll_bar_w = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin + ui.spacing().scroll.bar_outer_margin).max(18.0) + 10.0;
             let safe_right_margin = if is_preview_open { 36.0 } else { scroll_bar_w };
-            let safe_left_margin = 16.0;
+            let safe_left_margin = 0.0;
+            let safe_bottom_margin = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin).max(18.0) + 6.0;
             let safe_bg_rect = Rect::from_min_max(
                 Pos2::new(bg_rect.min.x + safe_left_margin, bg_rect.min.y),
-                Pos2::new(bg_rect.max.x - safe_right_margin, bg_rect.max.y),
+                Pos2::new(bg_rect.max.x - safe_right_margin, bg_rect.max.y - safe_bottom_margin),
             );
 
             let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
             let shift = ui.input(|i| i.modifiers.shift);
 
-            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !ctrl && !shift {
+            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column && !ctrl && !shift {
                 state.selection.clear();
             }
-            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview {
+            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
                 if let Some(pos) = ptr_pos {
                     state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
                 }
@@ -160,11 +171,8 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let rb_rel_y_id = Id::new(format!("rubber_band_rel_y_grid_{}", pane_tag));
             let rb_init_sel_id = Id::new(format!("rubber_band_init_sel_grid_{}", pane_tag));
 
-            let is_using_pointer = ui.ctx().is_using_pointer();
-            let is_dragging_widget = ui.ctx().dragged_id().is_some();
-
-            // Only start rubber-band if press was NOT on any file item, NOT on preview resize handle, NOT dragging files, and NOT using pointer on scrollbars/widgets
-            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_using_pointer && !is_dragging_widget {
+            // Only start rubber-band if press was NOT on any file item, NOT on preview resize handle, NOT on scrollbars/column resizer, and NOT dragging files
+            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
                 if let (Some(origin), Some(cur_pos)) = (press_origin, ptr_pos) {
                     if safe_bg_rect.contains(origin) {
                         let drag_delta = cur_pos - origin;
@@ -237,7 +245,9 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
             let total_count = entries.len();
             let total_rows = (total_count + cols - 1) / cols;
-            let row_h = item_size + gap;
+            let item_w = item_size;
+            let item_h = (item_size * 1.18).round();
+            let row_h = item_h + gap;
 
             let view_top = (bg_rect.min.y - content_top_y).max(0.0);
             let view_bottom = (bg_rect.max.y - content_top_y).max(0.0);
@@ -266,7 +276,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
                     for idx in row_start..row_end {
                         let entry = &entries[idx];
-                        let item_hit = grid_item(ui, t, state, entry, entries, item_size, thumb_q, idx);
+                        let item_hit = grid_item(ui, t, state, entry, entries, item_w, item_h, thumb_q, idx);
                         current_frame_rects.push(item_hit);
                         rendered_entries.push(entry.clone());
                     }
@@ -302,7 +312,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         for i in r_start..r_end {
                             let col_idx = i - r_start;
                             let col_x = bg_rect.min.x + col_idx as f32 * (item_size + gap);
-                            let col_rect = Rect::from_min_size(Pos2::new(col_x, content_top_y + r as f32 * row_h), Vec2::splat(item_size));
+                            let col_rect = Rect::from_min_size(Pos2::new(col_x, content_top_y + r as f32 * row_h), Vec2::new(item_w, item_h));
                             if rb_rect.intersects(col_rect) {
                                 next_sel.insert(entries[i].path.clone());
                             }
@@ -314,9 +324,9 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
             ui.ctx().data_mut(|d| d.insert_temp(rects_cache_id, current_frame_rects));
 
-            // Allocate empty background area at the bottom so user can always click/drag in empty space
+            // Allocate empty background area at the bottom so user can always click in empty space to deselect / context menu
             let avail_h = ui.available_height().max(100.0);
-            let (_empty_rect, empty_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail_h), Sense::click_and_drag());
+            let (_empty_rect, empty_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail_h), Sense::click());
             if empty_resp.clicked() && !ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.shift) {
                 state.selection.clear();
             }
@@ -332,7 +342,8 @@ fn grid_item(
     ui: &mut Ui, t: &AexTheme, state: &mut AppState,
     entry: &FileEntry,
     visible_entries: &[FileEntry],
-    item_size: f32,
+    item_w: f32,
+    item_h: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
 ) -> GridHitArea {
@@ -344,37 +355,53 @@ fn grid_item(
     let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
 
     let (rect, resp) = ui.allocate_exact_size(
-        Vec2::splat(item_size),
+        Vec2::new(item_w, item_h),
         Sense::click_and_drag(),
     );
 
-    // Visual calculations: Proportional layout coordinates (Nemo-style)
-    let visual_center = rect.min + Vec2::new(item_size / 2.0, item_size * 0.36);
-    let thumb_box_sz = (item_size * 0.40).round();
+    // Visual calculations: Proportional layout coordinates (Nemo & Windows 10 style)
+    // Sıkı ve birleşik tasarım: Thumbnail ile dosya adı arasındaki gereksiz boşluğu birleştir
+    let visual_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.40);
+    let thumb_box_sz = (item_w * 0.52).min(item_h * 0.48).round();
     let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::splat(thumb_box_sz));
 
-    let has_badge = item_size >= 60.0 && (entry.is_dir || entry.size > 0);
-    let name_center_y = if has_badge { item_size * 0.72 } else { item_size * 0.76 };
-    let name_rect_center = rect.min + Vec2::new(item_size / 2.0, name_center_y);
+    let has_badge = item_h >= 65.0 && (entry.is_dir || entry.size > 0);
+    let name_center_y = if has_badge { item_h * 0.76 } else { item_h * 0.78 };
+    let name_rect_center = rect.min + Vec2::new(item_w / 2.0, name_center_y);
 
-    let icon_font  = (item_size * 0.34).clamp(16.0, 60.0);
-    let name_font  = (item_size * 0.115).clamp(9.0, 14.0);
-    let badge_font = (item_size * 0.085).clamp(8.0, 11.0);
+    let icon_font  = (item_w * 0.36).clamp(16.0, 58.0);
+    let name_font  = (item_w * 0.115).clamp(9.5, 13.5);
+    let badge_font = (item_w * 0.085).clamp(8.0, 11.0);
 
-    let max_chars = ((item_size - 10.0) / (name_font * 0.60)).max(6.0) as usize;
+    let max_chars = ((item_w - 10.0) / (name_font * 0.60)).max(6.0) as usize;
     let name_text = truncate_name(&entry.name, max_chars);
 
-    // Measure label width so label pill tightly hugs the file name (Nemo style)
-    let approx_label_w = (name_text.chars().count() as f32 * name_font * 0.58 + 8.0).clamp(24.0, item_size - 16.0);
+    // Measure label width so label pill tightly hugs the file name
+    let approx_label_w = (name_text.chars().count() as f32 * name_font * 0.58 + 8.0).clamp(20.0, item_w - 12.0);
     let label_pill_rect = Rect::from_center_size(name_rect_center, Vec2::new(approx_label_w, name_font + 6.0));
 
-    // Tight Nemo-style hitboxes: 2px margin around thumbnail/icon and around name pill
-    let thumb_hit_rect = thumb_box_rect.expand(2.0);
-    let label_hit_rect = label_pill_rect.expand(2.0);
+    // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana birebir oturan hitbox
+    // Kullanıcının istediği gibi sadece görünen thumbnail/ikon alanı ve yazıyla birleşen sıkı alan
+    let icon_visual_sz = icon_font * 1.1;
+    let visual_icon_rect = Rect::from_center_size(visual_center, Vec2::splat(icon_visual_sz));
+    let top_hit_rect = if entry.is_dir {
+        thumb_box_rect.shrink2(Vec2::new(thumb_box_sz * 0.08, thumb_box_sz * 0.12))
+    } else {
+        visual_icon_rect
+    };
+
+    let combined_min_x = top_hit_rect.min.x.min(label_pill_rect.min.x);
+    let combined_max_x = top_hit_rect.max.x.max(label_pill_rect.max.x);
+    let combined_min_y = top_hit_rect.min.y;
+    let combined_max_y = label_pill_rect.max.y;
+    let unified_hit_rect = Rect::from_min_max(
+        Pos2::new(combined_min_x, combined_min_y),
+        Pos2::new(combined_max_x, combined_max_y),
+    );
 
     let hit_area = GridHitArea {
-        thumb_hit: thumb_hit_rect,
-        label_hit: label_hit_rect,
+        thumb_hit: unified_hit_rect,
+        label_hit: unified_hit_rect,
     };
 
     // Store item rect for rubber-band and click deselect
@@ -384,28 +411,53 @@ fn grid_item(
     let pointer_hover = ui.ctx().input(|i| i.pointer.hover_pos());
     let is_hovered_on_item = pointer_hover.map_or(false, |p| hit_area.contains(p));
 
+    // ── Smooth UI Animations (Tauri / Modern Desktop Style) ──
+    let hover_anim_id = Id::new(format!("hover_anim_{}", entry.path));
+    let hover_factor = ui.ctx().animate_bool(hover_anim_id, resp.hovered() && is_hovered_on_item);
+    let sel_anim_id = Id::new(format!("sel_anim_{}", entry.path));
+    let sel_factor = ui.ctx().animate_bool(sel_anim_id, is_sel);
+
     if ui.is_rect_visible(rect) {
         // Cut opacity (eğer clipboard'da cut ise)
         let opacity = if is_cut { 0.4 } else { 1.0 };
 
-        // ── Card Selection & Hover Backgrounds ──
-        if is_sel {
+        // ── Card Selection & Hover Backgrounds with Smooth Interpolation ──
+        if sel_factor > 0.001 {
+            let sel_alpha = (38.0 * sel_factor) as u8;
             let sel_bg = Color32::from_rgba_unmultiplied(
-                c.accent().r(), c.accent().g(), c.accent().b(), 35
+                c.accent().r(), c.accent().g(), c.accent().b(), sel_alpha
             );
             ui.painter().rect_filled(rect, Rounding::same(s.radius_md), sel_bg);
-            ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, c.accent()));
+            let border_alpha = (255.0 * sel_factor) as u8;
+            let border_col = Color32::from_rgba_unmultiplied(
+                c.accent().r(), c.accent().g(), c.accent().b(), border_alpha
+            );
+            ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, border_col));
             // Name pill highlight
-            ui.painter().rect_filled(label_pill_rect, Rounding::same(4.0), c.accent());
-        } else if resp.hovered() && is_hovered_on_item {
+            ui.painter().rect_filled(label_pill_rect, Rounding::same(4.0), border_col);
+        } else if hover_factor > 0.001 {
+            let hover_alpha = (95.0 * hover_factor) as u8;
             let hover_bg = Color32::from_rgba_unmultiplied(
-                c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), 85
+                c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), hover_alpha
             );
             ui.painter().rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
         }
 
+        // Geri alma / aktarım sonrası parıldama efekti (Glow pulse)
+        if let Some(pulse) = state.get_highlight_pulse(&entry.path) {
+            let glow_col = Color32::from_rgba_unmultiplied(
+                c.accent().r(), c.accent().g(), c.accent().b(), (200.0 * pulse) as u8
+            );
+            ui.painter().rect_stroke(
+                rect.expand(2.5),
+                Rounding::same(s.radius_md + 2.0),
+                Stroke::new(2.5_f32, glow_col),
+            );
+            ui.ctx().request_repaint();
+        }
+
         // Thumbnail çizildiyse icon çizme
-        let drew_thumb = draw_grid_thumbnail(ui, t, entry, rect, item_size, thumb_q, is_cut, opacity);
+        let drew_thumb = draw_grid_thumbnail(ui, t, entry, rect, item_w, item_h, thumb_q, is_cut, opacity);
 
         // Icon — sadece thumbnail yoksa çiz
         if !drew_thumb {
@@ -427,7 +479,7 @@ fn grid_item(
         // Symlink indicator
         if entry.is_symlink {
             ui.painter().text(
-                rect.min + Vec2::new(item_size * 0.76, item_size * 0.18),
+                rect.min + Vec2::new(item_w * 0.76, item_h * 0.18),
                 Align2::CENTER_CENTER,
                 icon(t, "symlink"),
                 FontId::new(badge_font, FontFamily::Monospace),
@@ -439,7 +491,7 @@ fn grid_item(
         if is_renaming {
             let te_rect = Rect::from_center_size(
                 name_rect_center,
-                Vec2::new(item_size - 8.0, 20.0),
+                Vec2::new(item_w - 8.0, 20.0),
             );
             let te_id = Id::new(format!("grid_rename_{}", entry.path));
             let te_resp = ui.put(
@@ -447,7 +499,7 @@ fn grid_item(
                 egui::TextEdit::singleline(&mut state.rename_buf)
                     .id(te_id)
                     .font(FontId::new(t.typography.size_xs, FontFamily::Proportional))
-                    .desired_width(item_size - 8.0)
+                    .desired_width(item_w - 8.0)
                     .frame(true),
             );
             if state.rename_just_started {
@@ -515,7 +567,7 @@ fn grid_item(
                 human_size(entry.size)
             };
 
-            let badge_center = rect.min + Vec2::new(item_size / 2.0, item_size * 0.88);
+            let badge_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.88);
             ui.painter().text(
                 badge_center,
                 Align2::CENTER_CENTER,
@@ -584,28 +636,19 @@ fn grid_item(
 
     // Right click
     if resp.secondary_clicked() {
-        if !state.selection.is_selected(&entry.path) {
-            state.selection.select_only(entry.path.clone());
-        }
-        let pos = ui.ctx().pointer_interact_pos()
-            .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()).or(i.pointer.press_origin())))
-            .unwrap_or_else(|| rect.center());
-        state.panels.context_menu = Some(ContextMenuState {
-            x: pos.x, y: pos.y, target: Some(entry.clone()),
-        });
-    }
-
-    // ── Drag görsel feedback ──────────────────────────────────────────────
-    // Sürüklenirken yarı saydam ghost göster
-    if state.drag.dragging && state.selection.is_selected(&entry.path) {
-        if let Some(pos) = ui.ctx().pointer_hover_pos() {
-            let ghost = Rect::from_center_size(pos, Vec2::splat(item_size * 0.6));
-            ui.painter().rect_filled(ghost, Rounding::same(s.radius_sm),
-                Color32::from_rgba_unmultiplied(
-                    c.accent().r(), c.accent().g(), c.accent().b(), 40));
-            let badge = format!("{}", state.selection.count());
-            ui.painter().text(ghost.center(), Align2::CENTER_CENTER,
-                &badge, FontId::new(14.0, FontFamily::Proportional), c.accent());
+        let pos = interact_pos.unwrap_or_else(|| rect.center());
+        if clicked_on_item {
+            if !state.selection.is_selected(&entry.path) {
+                state.selection.select_only(entry.path.clone());
+            }
+            state.panels.context_menu = Some(ContextMenuState {
+                x: pos.x, y: pos.y, target: Some(entry.clone()),
+            });
+        } else {
+            // Tıpkı Nemo ve Arch Explorer Tauri gibi: Boş alana sağ tıklanırsa tuval bağlam menüsü açılır
+            state.panels.context_menu = Some(ContextMenuState {
+                x: pos.x, y: pos.y, target: None,
+            });
         }
     }
 
@@ -619,29 +662,23 @@ fn grid_item(
         }
         let sources = state.selection.paths();
         let copy = ui.input(|i| i.modifiers.ctrl);
-        // Dış uygulamalar (Firefox, Chrome, chat apps) için anında sistem panosuna da yükle
-        crate::backend::clipboard::copy_files_to_system_clipboard_async(sources.clone(), !copy);
-        // Harici pencereler (Firefox drop target vb.) için arka planda native DnD başlat
-        let ext_sources = sources.clone();
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("arch-explorer-drag")
-                .args(&ext_sources)
-                .spawn();
-        });
+        // Sürükle-bırak panoyu (clipboard) kirletmez; doğrudan yerel Wayland DnD motorunu başlatır
+        spawn_native_drag(&sources);
         state.drag.start(sources, copy);
     }
 
     // Drop target handling for folders
     let is_pointer_over = ui.ctx().pointer_interact_pos()
         .or_else(|| ui.ctx().pointer_hover_pos())
-        .map(|p| hit_area.contains(p))
+        .map(|p| hit_area.contains(p) || rect.contains(p))
         .unwrap_or(false);
 
     if state.drag.dragging && entry.is_dir && is_pointer_over {
-        // Highlighting for drop target
+        state.drag.target_dir = Some(entry.path.clone());
+        // Prominent glowing border & tint for drop target
         ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(2.5_f32, c.accent()));
         ui.painter().rect_filled(rect, Rounding::same(s.radius_md),
-            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 40));
+            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 55));
 
         if ui.input(|i| i.pointer.any_released()) {
             let dest = entry.path.clone();
@@ -669,14 +706,28 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
     let row_h = (t.layout.item_height * state.view_scale).clamp(18.0, 80.0);
     let show_thumb = row_h >= 28.0;
 
-    // Column headers
-    list_headers(ui, t, state);
+    // Minimum içerik genişliği: Başlıklar ve satırların dar pencerelerde ezilip iç içe girmesini önler
+    let min_list_w = {
+        let size_w = state.list_columns.size_w.clamp(60.0, 300.0);
+        let perm_w = state.list_columns.perm_w.clamp(60.0, 300.0);
+        let mod_w = state.list_columns.modified_w.clamp(80.0, 400.0);
+        let prefix_w = sp.md + 26.0;
+        let fixed_right = size_w + perm_w + mod_w + 24.0;
+        prefix_w + 140.0 + fixed_right // En az 140px isim alanı garanti
+    };
 
-    egui::ScrollArea::vertical()
-        .id_salt(Id::new(format!("file_list_{}", pane_tag)).with(&state.nav.current_path))
+    // Her iki yönde scroll (ScrollArea::both) ile uygulama daraldığında yatay kaydırma çubuğu devreye girer
+    egui::ScrollArea::both()
+        .id_salt(Id::new(format!("file_list_scroll_{}", pane_tag)).with(&state.nav.current_path))
         .auto_shrink([false; 2])
         .drag_to_scroll(false)
         .show(ui, |ui| {
+            let avail_w = ui.available_width().max(min_list_w);
+            ui.set_min_width(avail_w);
+
+            // Column headers sticky inside scroll area
+            list_headers_with_width(ui, t, state, avail_w);
+
             let bg_rect = ui.clip_rect();
             let ptr_clicked  = ui.ctx().input(|i| i.pointer.primary_clicked());
             let ptr_sec      = ui.ctx().input(|i| i.pointer.secondary_clicked());
@@ -689,25 +740,30 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
             let rects_cache_id = Id::new(format!("rendered_rects_list_{}", pane_tag));
             let prev_hits: Vec<ListHitArea> = ui.ctx().data_mut(|d| d.get_temp(rects_cache_id)).unwrap_or_default();
-            let pressed_on_item = press_origin.map(|origin| prev_hits.iter().any(|h| h.item_hit.contains(origin))).unwrap_or(false);
+            // Sol kenardaki boşluk payı (16px) veya satırın solunda tıklandığında öğe üzerine basılmamış sayılır -> şeffaf seçim açılır!
+            let pressed_on_item = press_origin.map(|origin| {
+                origin.x >= bg_rect.min.x + 22.0 && prev_hits.iter().any(|h| h.item_hit.contains(origin))
+            }).unwrap_or(false);
 
             let is_resizing_preview: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_preview")).unwrap_or(false));
+            let is_resizing_column: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_column")).unwrap_or(false));
             let is_preview_open = state.panels.active == ActivePanel::Preview;
             let scroll_bar_w = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin + ui.spacing().scroll.bar_outer_margin).max(18.0) + 10.0;
             let safe_right_margin = if is_preview_open { 36.0 } else { scroll_bar_w };
-            let safe_left_margin = 16.0;
+            let safe_left_margin = 0.0;
+            let safe_bottom_margin = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin).max(18.0) + 6.0;
             let safe_bg_rect = Rect::from_min_max(
                 Pos2::new(bg_rect.min.x + safe_left_margin, bg_rect.min.y),
-                Pos2::new(bg_rect.max.x - safe_right_margin, bg_rect.max.y),
+                Pos2::new(bg_rect.max.x - safe_right_margin, bg_rect.max.y - safe_bottom_margin),
             );
 
             let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
             let shift = ui.input(|i| i.modifiers.shift);
 
-            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !ctrl && !shift && !state.is_rubber_banding {
+            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column && !ctrl && !shift && !state.is_rubber_banding {
                 state.selection.clear();
             }
-            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview {
+            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
                 if let Some(pos) = ptr_pos {
                     state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
                 }
@@ -717,11 +773,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let rb_rel_y_id = Id::new(format!("rubber_band_rel_y_list_{}", pane_tag));
             let rb_init_sel_id = Id::new(format!("rubber_band_init_sel_list_{}", pane_tag));
 
-            let is_using_pointer = ui.ctx().is_using_pointer();
-            let is_dragging_widget = ui.ctx().dragged_id().is_some();
-
-            // Only start rubber-band if press was NOT on preview resize handle, NOT dragging files, and NOT using pointer on scrollbars/widgets
-            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_using_pointer && !is_dragging_widget {
+            // Only start rubber-band if press was NOT on preview resize handle, NOT on scrollbars/column resizers, and NOT dragging files
+            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
                 if let (Some(origin), Some(cur_pos)) = (press_origin, ptr_pos) {
                     if safe_bg_rect.contains(origin) {
                         let drag_delta = cur_pos - origin;
@@ -812,45 +865,74 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 let entry = &entries[idx];
                 let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
                 let is_sel = state.selection.is_selected_at(&entry.path, idx);
-                let w = ui.available_width().max(40.0); // panic guard
+                let w = avail_w.max(ui.available_width());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, row_h), Sense::click_and_drag());
                 rendered_entries.push(entry.clone());
 
                 let size_w = state.list_columns.size_w.clamp(60.0, 300.0);
                 let perm_w = state.list_columns.perm_w.clamp(60.0, 300.0);
                 let mod_w = state.list_columns.modified_w.clamp(80.0, 400.0);
-                let name_x = rect.min.x + sp.md + 26.0;
                 let right_space = size_w + perm_w + mod_w + 24.0;
+
+                // Dinamik boyutlandırma: Row yüksekliğine göre ikon/thumbnail boyutu ve yazı başlangıç konumu
+                let th_sz = (row_h - 4.0).clamp(16.0, 72.0);
+                let icon_display_sz = (row_h * 0.60).clamp(15.0, 48.0);
+                let icon_cx = rect.min.x + sp.md + 4.0 + (th_sz.max(icon_display_sz) / 2.0);
+                let actual_name_x = (icon_cx + (th_sz.max(icon_display_sz) / 2.0) + 8.0).max(rect.min.x + sp.md + 26.0);
 
                 // Rubber-band hit testing
                 let item_rect_id = Id::new(format!("item_rect_{}", entry.path));
                 ui.ctx().data_mut(|d| d.insert_temp(item_rect_id, rect));
 
-                if ui.is_rect_visible(rect) {
-                    // Row background
-                    let bg = if is_sel {
-                        Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 30)
-                    } else if resp.hovered() {
-                        c.bg_surface0()
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    ui.painter().rect_filled(rect, Rounding::same(s.radius_sm), bg);
+                // Smooth animations for list row hover & selection
+                let list_hover_id = Id::new(format!("lst_hov_{}", entry.path));
+                let list_hov_factor = ui.ctx().animate_bool(list_hover_id, resp.hovered());
+                let list_sel_id = Id::new(format!("lst_sel_{}", entry.path));
+                let list_sel_factor = ui.ctx().animate_bool(list_sel_id, is_sel);
 
-                    // Left accent strip (selected)
-                    if is_sel {
+                if ui.is_rect_visible(rect) {
+                    // Row background with smooth transition
+                    if list_sel_factor > 0.001 {
+                        let sel_alpha = (36.0 * list_sel_factor) as u8;
+                        let bg = Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), sel_alpha);
+                        ui.painter().rect_filled(rect, Rounding::same(s.radius_sm), bg);
+                    } else if list_hov_factor > 0.001 {
+                        let hov_alpha = (80.0 * list_hov_factor) as u8;
+                        let bg = Color32::from_rgba_unmultiplied(c.bg_surface0().r(), c.bg_surface0().g(), c.bg_surface0().b(), hov_alpha);
+                        ui.painter().rect_filled(rect, Rounding::same(s.radius_sm), bg);
+                    }
+
+                    // Left accent strip (selected) with smooth scale/fade
+                    if list_sel_factor > 0.001 {
+                        let strip_w = 2.5 * list_sel_factor;
+                        let strip_alpha = (255.0 * list_sel_factor) as u8;
+                        let strip_col = Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), strip_alpha);
                         ui.painter().rect_filled(
-                            Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())),
+                            Rect::from_min_size(rect.min, Vec2::new(strip_w, rect.height())),
                             Rounding::same(1.0),
-                            c.accent(),
+                            strip_col,
                         );
+                    }
+
+                    // Geri alma / aktarım sonrası parıldama efekti (Glow pulse)
+                    if let Some(pulse) = state.get_highlight_pulse(&entry.path) {
+                        let glow_col = Color32::from_rgba_unmultiplied(
+                            c.accent().r(), c.accent().g(), c.accent().b(), (180.0 * pulse) as u8
+                        );
+                        ui.painter().rect_stroke(
+                            rect.expand(1.0),
+                            Rounding::same(s.radius_sm + 1.0),
+                            Stroke::new(2.0_f32, glow_col),
+                        );
+                        ui.ctx().request_repaint();
                     }
 
                     let row_y = rect.min.y + row_h / 2.0;
 
-                    // Icon / Thumbnail
-                    let icon_x  = rect.min.x + sp.md + 4.0;
-                    let icon_cx = icon_x + t.icons.size_md / 2.0;
+                    // Dinamik boyutlandırma: Row yüksekliğine göre ikon/thumbnail boyutu ve yazı başlangıç konumu
+                    let th_sz = (row_h - 4.0).clamp(16.0, 72.0);
+                    let icon_display_sz = (row_h * 0.60).clamp(15.0, 48.0);
+                    let icon_cx = rect.min.x + sp.md + 4.0 + (th_sz.max(icon_display_sz) / 2.0);
 
                     let ext = entry.extension.to_lowercase();
                     let is_media = !entry.is_dir && matches!(ext.as_str(),
@@ -860,7 +942,6 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     let mut drew_thumb = false;
 
                     if is_media && show_thumb {
-                        let th_sz  = (row_h - 4.0).max(16.0);
                         let th_id  = egui::Id::new(format!("thumb_{}_lo", entry.path));
                         let handle: Option<egui::TextureHandle> =
                             ui.ctx().data_mut(|d| d.get_temp(th_id));
@@ -917,17 +998,19 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                             Pos2::new(icon_cx, rect.center().y),
                             Align2::CENTER_CENTER,
                             file_icon(t, entry),
-                            FontId::new(t.icons.size_md, FontFamily::Monospace),
+                            FontId::new(icon_display_sz, FontFamily::Monospace),
                             icon_color_for(t, entry),
                         );
                     }
 
                     // Name or Rename Edit
+                    // Yazı başlangıç x konumu thumbnail/ikon genişliğine göre sağa kayar!
+                    let name_x = actual_name_x;
 
                     if is_renaming {
-                        let te_w = (rect.max.x - name_x - right_space).max(100.0);
+                        let te_w = (rect.max.x - actual_name_x - right_space).max(100.0);
                         let te_rect = Rect::from_min_size(
-                            Pos2::new(name_x, rect.min.y + 4.0),
+                            Pos2::new(actual_name_x, rect.min.y + 4.0),
                             Vec2::new(te_w, row_h - 8.0),
                         );
                         let te_id = Id::new(format!("list_rename_{}", entry.path));
@@ -969,7 +1052,7 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         }
                     } else {
                         // Max visible characters for Name
-                        let max_name_w = (rect.max.x - name_x - right_space).max(40.0);
+                        let max_name_w = (rect.max.x - actual_name_x - right_space).max(40.0);
                         let mut name_text = entry.name.clone();
                         // Truncate if overly long for available name width
                         let approx_char_w = 8.0_f32;
@@ -979,13 +1062,27 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                             name_text = format!("{}…", truncated);
                         }
 
+                        let name_font_sz = (t.typography.size_base * (row_h / 26.0).clamp(0.9, 1.4)).clamp(11.0, 16.0);
                         ui.painter().text(
-                            Pos2::new(name_x, rect.min.y + row_h / 2.0),
+                            Pos2::new(actual_name_x, rect.min.y + row_h / 2.0),
                             Align2::LEFT_CENTER,
                             &name_text,
-                            FontId::new(t.typography.size_base, FontFamily::Proportional),
+                            FontId::new(name_font_sz, FontFamily::Proportional),
                             if is_sel { c.text_primary() } else { c.text_secondary() },
                         );
+
+                        // Symlink rozeti: Arch-Explorer Tauri gibi "⤷" işareti
+                        if entry.is_symlink {
+                            let text_len = name_text.chars().count() as f32;
+                            let sym_x = actual_name_x + (text_len * name_font_sz * 0.58) + 6.0;
+                            ui.painter().text(
+                                Pos2::new(sym_x, rect.min.y + row_h / 2.0),
+                                Align2::LEFT_CENTER,
+                                "⤷",
+                                FontId::new(name_font_sz * 1.1, FontFamily::Monospace),
+                                c.accent(),
+                            );
+                        }
                     }
 
                     // Git status badge
@@ -1067,17 +1164,18 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
                 // Calculate item hit area (Icon + Name label + 5px margin, tight Nemo-style)
                 let text_len = entry.name.chars().count().min(40) as f32;
-                let text_w = (text_len * 8.0).clamp(32.0, (rect.max.x - name_x - right_space).max(32.0));
+                let text_w = (text_len * 9.0).clamp(32.0, (rect.max.x - actual_name_x - right_space).max(32.0));
                 let hit_area = Rect::from_min_max(
-                    Pos2::new(rect.min.x + sp.md.min(10.0), rect.min.y),
-                    Pos2::new((name_x + text_w + 6.0).min(rect.max.x - right_space.max(0.0)), rect.max.y),
+                    Pos2::new(rect.min.x + sp.md, rect.min.y),
+                    Pos2::new((actual_name_x + text_w + 12.0).min(rect.max.x - right_space.max(0.0)), rect.max.y),
                 );
                 current_frame_rects.push(ListHitArea {
                     row_rect: rect,
                     item_hit: hit_area,
                 });
 
-                let click_pos = ui.ctx().input(|i| i.pointer.interact_pos());
+                let click_pos = resp.interact_pointer_pos()
+                    .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.press_origin()).or(i.pointer.latest_pos())));
                 let press_origin = ui.ctx().input(|i| i.pointer.press_origin());
                 let clicked_on_item = click_pos.map_or(false, |p| hit_area.contains(p));
                 let drag_originated_on_item = press_origin.map_or(false, |p| hit_area.contains(p));
@@ -1110,15 +1208,22 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 if resp.double_clicked() && !is_renaming && clicked_on_item { open_entry(state, entry); }
 
                 if resp.secondary_clicked() {
-                    if !state.selection.is_selected_at(&entry.path, idx) {
-                        state.selection.select_only(entry.path.clone());
-                    }
                     let pos = ui.ctx().pointer_interact_pos()
                         .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()).or(i.pointer.press_origin())))
                         .unwrap_or_else(|| rect.center());
-                    state.panels.context_menu = Some(ContextMenuState {
-                        x: pos.x, y: pos.y, target: Some(entry.clone()),
-                    });
+                    if clicked_on_item {
+                        if !state.selection.is_selected_at(&entry.path, idx) {
+                            state.selection.select_only(entry.path.clone());
+                        }
+                        state.panels.context_menu = Some(ContextMenuState {
+                            x: pos.x, y: pos.y, target: Some(entry.clone()),
+                        });
+                    } else {
+                        // Nemo-style: Boş alana sağ tıklanırsa tuval bağlam menüsü
+                        state.panels.context_menu = Some(ContextMenuState {
+                            x: pos.x, y: pos.y, target: None,
+                        });
+                    }
                 }
 
                 // Drag start — if not selected, select it immediately and start dragging
@@ -1128,15 +1233,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     }
                     let sources = state.selection.paths();
                     let copy = ui.input(|i| i.modifiers.ctrl);
-                    // Dış uygulamalar (Firefox, Chrome, chat apps) için anında sistem panosuna da yükle
-                    crate::backend::clipboard::copy_files_to_system_clipboard_async(sources.clone(), !copy);
-                    // Harici pencereler (Firefox drop target vb.) için arka planda native DnD başlat
-                    let ext_sources = sources.clone();
-                    std::thread::spawn(move || {
-                        let _ = std::process::Command::new("arch-explorer-drag")
-                            .args(&ext_sources)
-                            .spawn();
-                    });
+                    // Sürükle-bırak panoyu (clipboard) kirletmez; doğrudan yerel Wayland DnD motorunu başlatır
+                    spawn_native_drag(&sources);
                     state.drag.start(sources, copy);
                 }
 
@@ -1147,10 +1245,11 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     .unwrap_or(false);
 
                 if state.drag.dragging && entry.is_dir && is_pointer_over {
+                    state.drag.target_dir = Some(entry.path.clone());
                     // Highlighting for drop target
                     ui.painter().rect_stroke(rect, Rounding::same(s.radius_sm), Stroke::new(2.0_f32, c.accent()));
                     ui.painter().rect_filled(rect, Rounding::same(s.radius_sm),
-                        Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 40));
+                        Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 50));
 
                     if ui.input(|i| i.pointer.any_released()) {
                         let dest = entry.path.clone();
@@ -1203,9 +1302,9 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
             ui.ctx().data_mut(|d| d.insert_temp(rects_cache_id, current_frame_rects));
 
-            // Allocate empty background area at the bottom so user can always click/drag in empty space
+            // Allocate empty background area at the bottom so user can always click in empty space to deselect / context menu
             let avail_h = ui.available_height().max(100.0);
-            let (_empty_rect, empty_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail_h), Sense::click_and_drag());
+            let (_empty_rect, empty_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail_h), Sense::click());
             if empty_resp.clicked() && !ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.shift) {
                 state.selection.clear();
             }
@@ -1218,8 +1317,12 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 }
 
 fn list_headers(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
-    let c = &t.colors;
     let w = ui.available_width().max(200.0);
+    list_headers_with_width(ui, t, state, w);
+}
+
+fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f32) {
+    let c = &t.colors;
 
     let prefix_w = t.spacing.md + 26.0;
     let size_w = state.list_columns.size_w.clamp(60.0, 300.0);
@@ -1324,6 +1427,9 @@ fn column_resizer(ui: &mut Ui, t: &AexTheme, id_str: &str) -> Option<f32> {
 
     if is_active {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new("is_resizing_column"), true));
+    } else if ui.input(|i| !i.pointer.any_down()) {
+        ui.ctx().data_mut(|d| d.remove::<bool>(Id::new("is_resizing_column")));
     }
     if resp.dragged() {
         Some(resp.drag_delta().x)
@@ -1454,6 +1560,171 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
         });
 }
 
+pub fn spawn_native_drag(sources: &[String]) {
+    if sources.is_empty() { return; }
+    let preview = crate::backend::thumbnails::generate_drag_preview_bgra(sources);
+    // Doğrudan yamalanmış winit Wayland veri aygıtı (SCTK) protokolünü dosyanın gerçek thumbnail'iyle tetikle!
+    winit::start_drag_files(sources.to_vec(), preview);
+}
+
+/// Tek ikili (Single-binary) bünyesinde çalışan yerel Wayland & GTK drag-drop motoru
+pub fn run_internal_dnd_worker(paths: &[String]) {
+    if paths.is_empty() { return; }
+    let paths_json = match serde_json::to_string(paths) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let script = r#"
+import sys, os, json, urllib.parse, math
+if "WAYLAND_DISPLAY" in os.environ and "GDK_BACKEND" not in os.environ:
+    os.environ["GDK_BACKEND"] = "wayland,x11"
+try:
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk, Gdk, GLib
+    import cairo
+
+    if not Gtk.init_check()[0]:
+        sys.exit(0)
+
+    paths = json.loads(sys.argv[1])
+    if not paths:
+        sys.exit(0)
+
+    uris = [f"file://{urllib.parse.quote(os.path.abspath(p))}" for p in paths]
+    uri_text = ("\r\n".join(uris) + "\r\n").encode('utf-8')
+    gnome_text = ("copy\n" + "\n".join(uris) + "\n").encode('utf-8')
+    plain_text = ("\n".join(paths) + "\n").encode('utf-8')
+
+    win = Gtk.Window(type=Gtk.WindowType.POPUP)
+    win.set_default_size(24, 24)
+
+    targets = [
+        Gtk.TargetEntry.new("text/uri-list", 0, 0),
+        Gtk.TargetEntry.new("x-special/gnome-copied-files", 0, 1),
+        Gtk.TargetEntry.new("text/plain", 0, 2),
+        Gtk.TargetEntry.new("UTF8_STRING", 0, 3),
+        Gtk.TargetEntry.new("DownloadURL", 0, 4),
+        Gtk.TargetEntry.new("STRING", 0, 5)
+    ]
+    tlist = Gtk.TargetList.new(targets)
+
+    def on_drag_data_get(widget, context, data, info, time):
+        if info == 0:
+            data.set_uris(uris)
+        elif info == 1:
+            atom = Gdk.Atom.intern("x-special/gnome-copied-files", False)
+            data.set(atom, 8, gnome_text)
+        elif info == 4:
+            if paths:
+                fname = os.path.basename(paths[0])
+                dl = f"application/octet-stream:{fname}:{uris[0]}".encode('utf-8')
+                atom = Gdk.Atom.intern("DownloadURL", False)
+                data.set(atom, 8, dl)
+        else:
+            data.set_text(plain_text.decode('utf-8'), len(plain_text))
+
+    def on_drag_end(widget, context):
+        Gtk.main_quit()
+
+    def on_drag_failed(widget, context, result):
+        Gtk.main_quit()
+
+    def on_drag_begin(widget, context):
+        try:
+            count = len(paths)
+            first_name = os.path.basename(paths[0]) if paths else "Öğe"
+            display_text = first_name[:24]
+            if count > 1:
+                display_text += f" (+{count - 1})"
+
+            card_w = max(160, min(280, len(display_text) * 9 + 40))
+            card_h = 36
+
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, card_w, card_h)
+            cr = cairo.Context(surface)
+
+            r = 8
+            cr.arc(r, r, r, math.pi, 1.5 * math.pi)
+            cr.arc(card_w - r, r, r, 1.5 * math.pi, 2 * math.pi)
+            cr.arc(card_w - r, card_h - r, r, 0, 0.5 * math.pi)
+            cr.arc(r, card_h - r, r, 0.5 * math.pi, math.pi)
+            cr.close_path()
+
+            # Arka plan: rgba(24, 24, 37, 0.95)
+            cr.set_source_rgba(0.094, 0.094, 0.145, 0.95)
+            cr.fill_preserve()
+
+            # Kenarlık: rgba(130, 100, 255, 0.85)
+            cr.set_source_rgba(0.51, 0.39, 1.0, 0.85)
+            cr.set_line_width(1.5)
+            cr.stroke()
+
+            # İkon sembolü
+            cr.set_source_rgba(0.51, 0.39, 1.0, 1.0)
+            cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            cr.set_font_size(13)
+            cr.move_to(10, 23)
+            cr.show_text("📄")
+
+            # Dosya adı metni: #ffffff
+            cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
+            cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            cr.set_font_size(11.5)
+            cr.move_to(30, 23)
+            cr.show_text(display_text)
+
+            # Doğrudan Wayland donanım imleç katmanına bağla!
+            Gtk.drag_set_icon_surface(context, surface)
+        except Exception:
+            pass
+
+    win.connect("drag-begin", on_drag_begin)
+    win.connect("drag-data-get", on_drag_data_get)
+    win.connect("drag-end", on_drag_end)
+    win.connect("drag-failed", on_drag_failed)
+    win.show_all()
+
+    # Max 15 saniye yaşama sınırı (zombi süreç oluşmasını kesin olarak engeller)
+    GLib.timeout_add_seconds(15, Gtk.main_quit)
+
+    disp = Gdk.Display.get_default()
+    x, y = 0, 0
+    if disp:
+        seat = disp.get_default_seat()
+        pointer = seat.get_pointer() if seat else None
+        if pointer:
+            _, x, y = pointer.get_position()
+            win.move(x - 12, y - 12)
+
+    ctx = Gtk.drag_begin_with_coordinates(win, tlist, Gdk.DragAction.COPY | Gdk.DragAction.MOVE, 1, None, x, y)
+    if not ctx:
+        Gtk.main_quit()
+        sys.exit(0)
+
+    # Context geldikten hemen sonra da bir kez garanti olarak ikonu ata
+    try:
+        on_drag_begin(win, ctx)
+    except Exception:
+        pass
+
+    Gtk.main()
+except Exception:
+    sys.exit(0)
+"#;
+
+    if let Ok(mut child) = std::process::Command::new("python3")
+        .args(["-c", script, &paths_json])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        let _ = child.wait();
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1466,6 +1737,7 @@ pub fn open_entry(state: &mut AppState, entry: &FileEntry) {
         let ext = entry.extension.to_lowercase();
         let is_video = matches!(ext.as_str(), "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts");
         let is_audio = matches!(ext.as_str(), "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma");
+        let is_script = matches!(ext.as_str(), "sh"|"bash"|"zsh") || entry.is_executable;
 
         if entry.path.starts_with("adb://") {
             // ADB üzerindeki dosyayı /tmp altına geçici çekip aç
@@ -1506,6 +1778,43 @@ pub fn open_entry(state: &mut AppState, entry: &FileEntry) {
                 state.panels.open_preview();
             }
             state.media_player.play(entry.path.clone(), is_video);
+        } else if is_script {
+            // Bash / shell komut dosyalarını doğrudan arkada bir terminal ile çalıştır
+            let p = std::path::Path::new(&entry.path);
+            let parent_dir = p.parent().map(|d| d.to_string_lossy().to_string())
+                .unwrap_or_else(|| state.active_pane_dir());
+
+            // Entegre terminali dosya diziniyle aç ve komutu hazırla
+            state.open_terminal(Some(parent_dir.clone()));
+            let exec_cmd = format!("./{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| entry.name.clone()));
+            state.terminal.input = exec_cmd.clone();
+
+            // Aynı zamanda terminal penceresinde veya arka planda çalıştır
+            let term_bin = if std::process::Command::new("which").arg("alacritty").output().map(|o| o.status.success()).unwrap_or(false) {
+                "alacritty"
+            } else if std::process::Command::new("which").arg("kitty").output().map(|o| o.status.success()).unwrap_or(false) {
+                "kitty"
+            } else {
+                "xterm"
+            };
+
+            let script_path = entry.path.clone();
+            std::thread::spawn(move || {
+                let run_script = format!("chmod +x {:?}; {:?}; echo ''; echo '[Bitti - Çıkmak için Enter tuşuna basın]'; read -r", script_path, script_path);
+                let _ = match term_bin {
+                    "alacritty" => std::process::Command::new("alacritty")
+                        .args(["--working-directory", &parent_dir, "-e", "bash", "-c", &run_script])
+                        .spawn(),
+                    "kitty" => std::process::Command::new("kitty")
+                        .args(["--directory", &parent_dir, "bash", "-c", &run_script])
+                        .spawn(),
+                    _ => std::process::Command::new("xterm")
+                        .args(["-e", "bash", "-c", &run_script])
+                        .current_dir(&parent_dir)
+                        .spawn(),
+                };
+            });
+            state.notify.info(format!("Terminal ile çalıştırıldı: {}", entry.name));
         } else {
             // Diğer dosyaları xdg-open ile aç
             std::process::Command::new("xdg-open")
@@ -1724,10 +2033,11 @@ use crate::backend::thumbnails::{get_thumbnail, jpeg_to_color_image};
 
 fn draw_grid_thumbnail(
     ui: &mut Ui,
-    _t: &AexTheme,
+    t: &AexTheme,
     entry: &FileEntry,
     rect: Rect,
-    item_size: f32,
+    item_w: f32,
+    item_h: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     is_cut: bool,
     opacity: f32,
@@ -1743,8 +2053,8 @@ fn draw_grid_thumbnail(
 
     if !is_media || entry.is_dir { return false; }
 
-    let thumb_center = rect.min + Vec2::new(item_size / 2.0, item_size * 0.36);
-    let sz = (item_size * 0.52).round();
+    let thumb_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.35);
+    let sz = (item_w * 0.50).min(item_h * 0.46).round();
     let tr = Rect::from_center_size(thumb_center, Vec2::splat(sz));
     let tint = Color32::from_rgba_unmultiplied(255, 255, 255,
         if is_cut { 102 } else { (255.0 * opacity) as u8 });
@@ -1944,10 +2254,12 @@ pub fn render_snapshot_tagged(
                 .drag_to_scroll(false)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    let item_w = item_size;
+                    let item_h = (item_size * 1.18).round();
                     egui::Frame::none().inner_margin(Margin::same(gap)).show(ui, |ui| {
                         egui::Grid::new("inactive_file_grid")
-                            .min_col_width(item_size)
-                            .max_col_width(item_size)
+                            .min_col_width(item_w)
+                            .max_col_width(item_w)
                             .spacing(Vec2::splat(gap))
                             .show(ui, |ui| {
                                 for (idx, entry) in entries.iter().enumerate() {
@@ -1956,7 +2268,7 @@ pub fn render_snapshot_tagged(
                                     }
                                     let is_sel = snap.selection.is_selected(&entry.path);
                                     let (rect, resp) = ui.allocate_exact_size(
-                                        Vec2::splat(item_size),
+                                        Vec2::new(item_w, item_h),
                                         Sense::hover(),
                                     );
                                     if ui.is_rect_visible(rect) {
@@ -1985,8 +2297,8 @@ pub fn render_snapshot_tagged(
                                             ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, c.accent()));
                                         }
 
-                                        let visual_center = rect.min + Vec2::new(item_size / 2.0, item_size * 0.36);
-                                        let drew_thumb = draw_grid_thumbnail(ui, t, entry, rect, item_size, thumb_q, false, 1.0);
+                                        let visual_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.35);
+                                        let drew_thumb = draw_grid_thumbnail(ui, t, entry, rect, item_w, item_h, thumb_q, false, 1.0);
 
                                         if !drew_thumb {
                                             let icon_str = file_icon(t, entry);

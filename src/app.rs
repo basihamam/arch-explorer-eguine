@@ -861,14 +861,13 @@ impl eframe::App for ArchExplorer {
             if i.modifiers.ctrl {
                 let delta = i.raw_scroll_delta.y;
                 if delta.abs() > 0.1 {
-                    // raw_scroll_delta genellikle 10-120 arası gelir (mouse wheel = ~53)
-                    // normalleştirip 0.05-0.15 arası değişim sağla
-                    let step = (delta / 53.0).clamp(-0.5, 0.5) * 0.3;
-                    self.state.view_scale = (self.state.view_scale + step).clamp(0.4, 3.0);
-                }
-                let zd = i.zoom_delta();
-                if (zd - 1.0).abs() > 0.001 {
-                    self.state.view_scale = (self.state.view_scale * zd).clamp(0.4, 3.0);
+                    let step = (delta / 53.0).clamp(-0.5, 0.5) * 0.15;
+                    self.state.view_scale = (self.state.view_scale + step).clamp(0.5, 2.5);
+                } else {
+                    let zd = i.zoom_delta();
+                    if (zd - 1.0).abs() > 0.001 {
+                        self.state.view_scale = (self.state.view_scale * zd).clamp(0.5, 2.5);
+                    }
                 }
             }
         });
@@ -1050,10 +1049,12 @@ impl ArchExplorer {
                 self.state.switch_tab(prev);
             }
 
+            let term_typing = self.state.terminal.open && self.state.terminal.is_focused;
+
             // Ctrl+C / Event::Copy — Copy
             let is_copy = (i.key_pressed(Key::C) && i.modifiers.ctrl)
                 || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
-            if is_copy && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open {
+            if is_copy && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let count = paths.len();
@@ -1065,7 +1066,7 @@ impl ArchExplorer {
             // Ctrl+X / Event::Cut — Cut
             let is_cut = (i.key_pressed(Key::X) && i.modifiers.ctrl)
                 || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
-            if is_cut && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open {
+            if is_cut && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let count = paths.len();
@@ -1077,7 +1078,7 @@ impl ArchExplorer {
             // Ctrl+V / Event::Paste — Paste
             let is_paste = (i.key_pressed(Key::V) && i.modifiers.ctrl)
                 || i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-            if is_paste && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open {
+            if is_paste && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 let target_dir = self.state.active_context_path();
                 if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                     let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
@@ -1089,13 +1090,13 @@ impl ArchExplorer {
             }
 
             // Select all
-            if i.key_pressed(Key::A) && i.modifiers.ctrl {
+            if i.key_pressed(Key::A) && i.modifiers.ctrl && !term_typing {
                 let entries = self.state.dir.entries.clone();
                 self.state.selection.select_all(&entries);
             }
 
             // Arrow keys for file selection and Shift+Arrow for range selection
-            if !self.state.terminal.open && !self.state.search.active && self.state.rename_target.is_none() {
+            if !term_typing && !self.state.search.active && self.state.rename_target.is_none() {
                 let entries_len = self.state.dir.entries.len();
                 if entries_len > 0 {
                     let mut move_dir: Option<isize> = None;
@@ -1133,7 +1134,7 @@ impl ArchExplorer {
             }
 
             // Delete & Shift+Delete — Dosyaları Sil / Çöp Kutusuna Taşı
-            if i.key_pressed(Key::Delete) && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open {
+            if i.key_pressed(Key::Delete) && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let permanent = i.modifiers.shift;
@@ -1143,7 +1144,7 @@ impl ArchExplorer {
 
             // Left / Right Arrow Video Seek & Space Play/Pause (Medya oynatılıyorsa)
             if (self.state.media_player.is_playing || self.state.media_player.is_paused) 
-                && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open 
+                && self.state.rename_target.is_none() && !self.state.search.active && !term_typing 
             {
                 if i.key_pressed(Key::ArrowLeft) && !i.modifiers.alt {
                     self.state.media_player.seek_relative(-5.0);
@@ -1157,13 +1158,13 @@ impl ArchExplorer {
             }
 
             // Search focus
-            if i.key_pressed(Key::F) && i.modifiers.ctrl {
+            if i.key_pressed(Key::F) && i.modifiers.ctrl && !term_typing {
                 self.state.search.active = true;
             }
 
             // Escape — panelleri kapat, seçimi temizle
             // Ctrl+Z — Undo
-            if i.key_pressed(Key::Z) && i.modifiers.ctrl {
+            if i.key_pressed(Key::Z) && i.modifiers.ctrl && !term_typing {
                 let tx = self.tx.clone();
                 std::thread::spawn(move || {
                     match crate::backend::clipboard::undo_last() {
@@ -1182,12 +1183,12 @@ impl ArchExplorer {
             }
 
             // Ctrl+D — Duplicate
-            if i.key_pressed(Key::D) && i.modifiers.ctrl && self.state.rename_target.is_none() && !self.state.search.active && !self.state.terminal.open {
+            if i.key_pressed(Key::D) && i.modifiers.ctrl && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 self.state.duplicate_selected();
             }
 
             // F2 — inline rename
-            if i.key_pressed(Key::F2) {
+            if i.key_pressed(Key::F2) && !term_typing {
                 let sel = self.state.selection.paths();
                 if sel.len() == 1 {
                     self.state.start_rename(&sel[0]);
@@ -1271,70 +1272,59 @@ impl ArchExplorer {
             });
 
         // ── Preview Auto Open / Close based on preview_mode ──────────────
+        // Çoklu seçim veya rubber-band şeffaf seçim önizleme panelini KESİNLİKLE kapatmaz!
         let sel_paths = self.state.selected_paths();
         let sel_changed = sel_paths != self.state.selection_prev;
 
-        match self.state.preview_mode {
-            crate::state::PreviewBehaviorMode::AlwaysOpen => {
-                if self.state.is_rubber_banding || sel_paths.len() > 1 {
-                    if self.state.panels.active == crate::state::ActivePanel::Preview {
-                        self.state.panels.close();
-                    }
-                } else if self.state.panels.active == crate::state::ActivePanel::None {
-                    self.state.panels.open_preview();
-                }
-            }
-            crate::state::PreviewBehaviorMode::AutoOnSelect => {
-                if self.state.is_rubber_banding || sel_paths.len() > 1 {
-                    if self.state.panels.active == crate::state::ActivePanel::Preview {
-                        self.state.panels.close();
-                    }
-                } else if sel_changed {
-                    if sel_paths.len() == 1 {
-                        if self.state.panels.active == crate::state::ActivePanel::None {
-                            self.state.panels.open_preview();
-                        }
-                    } else if sel_paths.is_empty() {
-                        if self.state.panels.active == crate::state::ActivePanel::Preview {
-                            self.state.panels.close();
-                        }
+        if !self.state.is_rubber_banding {
+            match self.state.preview_mode {
+                crate::state::PreviewBehaviorMode::AlwaysOpen => {
+                    if self.state.panels.active == crate::state::ActivePanel::None {
+                        self.state.panels.open_preview();
                     }
                 }
-            }
-            crate::state::PreviewBehaviorMode::Custom => {
-                if self.state.is_rubber_banding || sel_paths.len() > 1 {
-                    if self.state.panels.active == crate::state::ActivePanel::Preview {
-                        self.state.panels.close();
-                    }
-                } else if sel_changed {
-                    if sel_paths.len() == 1 {
-                        let p = &sel_paths[0];
-                        let should_open = if let Some(e) = self.state.dir.entries.iter().find(|e| e.path == *p) {
-                            if e.is_dir {
-                                self.state.preview_custom_dir
-                            } else {
-                                let ext = e.extension.to_lowercase();
-                                match ext.as_str() {
-                                    "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg" => self.state.preview_custom_image,
-                                    "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv" => self.state.preview_custom_video,
-                                    "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a" => self.state.preview_custom_audio,
-                                    "rs"|"py"|"js"|"ts"|"go"|"c"|"cpp"|"h"|"lua"|"rb"|"sh"|"toml"|"json"|"yaml"|"yml"|"txt"|"log"|"md"|"css"|"html" => self.state.preview_custom_text,
-                                    "pdf"|"doc"|"docx"|"odt"|"epub" => self.state.preview_custom_doc,
-                                    _ => false,
-                                }
-                            }
-                        } else {
-                            false
-                        };
-                        if should_open {
+                crate::state::PreviewBehaviorMode::AutoOnSelect => {
+                    if sel_changed {
+                        if !sel_paths.is_empty() {
                             if self.state.panels.active == crate::state::ActivePanel::None {
                                 self.state.panels.open_preview();
                             }
                         } else if self.state.panels.active == crate::state::ActivePanel::Preview {
                             self.state.panels.close();
                         }
-                    } else if sel_paths.is_empty() && self.state.panels.active == crate::state::ActivePanel::Preview {
-                        self.state.panels.close();
+                    }
+                }
+                crate::state::PreviewBehaviorMode::Custom => {
+                    if sel_changed {
+                        if !sel_paths.is_empty() {
+                            let p = &sel_paths[0];
+                            let should_open = if let Some(e) = self.state.dir.entries.iter().find(|e| e.path == *p) {
+                                if e.is_dir {
+                                    self.state.preview_custom_dir
+                                } else {
+                                    let ext = e.extension.to_lowercase();
+                                    match ext.as_str() {
+                                        "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg" => self.state.preview_custom_image,
+                                        "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv" => self.state.preview_custom_video,
+                                        "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a" => self.state.preview_custom_audio,
+                                        "rs"|"py"|"js"|"ts"|"go"|"c"|"cpp"|"h"|"lua"|"rb"|"sh"|"toml"|"json"|"yaml"|"yml"|"txt"|"log"|"md"|"css"|"html" => self.state.preview_custom_text,
+                                        "pdf"|"doc"|"docx"|"odt"|"epub" => self.state.preview_custom_doc,
+                                        _ => false,
+                                    }
+                                }
+                            } else {
+                                false
+                            };
+                            if should_open {
+                                if self.state.panels.active == crate::state::ActivePanel::None {
+                                    self.state.panels.open_preview();
+                                }
+                            } else if self.state.panels.active == crate::state::ActivePanel::Preview {
+                                self.state.panels.close();
+                            }
+                        } else if self.state.panels.active == crate::state::ActivePanel::Preview {
+                            self.state.panels.close();
+                        }
                     }
                 }
             }
@@ -1624,11 +1614,88 @@ impl ArchExplorer {
             render_fullscreen_video(ctx, t, &mut self.state);
         }
 
+        // ── OS-level Drag & Drop (External files dropped from Nemo, Firefox, Chrome, Desktop) ──
+        let hovered_files = ctx.input(|i| i.raw.hovered_files.clone());
+        let is_recent_internal_drag = self.state.drag.dragging
+            || self.state.drag.last_drag_time.map_or(false, |t| t.elapsed() < std::time::Duration::from_millis(2000));
+
+        if !hovered_files.is_empty() && !is_recent_internal_drag {
+            let screen_rect = ctx.screen_rect();
+            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dnd_hover_overlay")));
+            p.rect_stroke(
+                screen_rect.shrink(4.0),
+                egui::Rounding::same(10.0),
+                egui::Stroke::new(3.0_f32, t.colors.accent()),
+            );
+            p.rect_filled(
+                screen_rect.shrink(4.0),
+                egui::Rounding::same(10.0),
+                egui::Color32::from_rgba_unmultiplied(t.colors.accent().r(), t.colors.accent().g(), t.colors.accent().b(), 25),
+            );
+        }
+
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped_files.is_empty() {
+            let mut paths = Vec::new();
+            for f in dropped_files {
+                if let Some(ref p) = f.path {
+                    paths.push(p.to_string_lossy().to_string());
+                }
+            }
+            if paths.is_empty() {
+                // Wayland veya bazı masaüstü istemcilerinde file path yerine raw bytes veya URI listesi gelebilir
+                for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+                    if let Some(bytes) = f.bytes {
+                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                            let parsed = crate::backend::clipboard::parse_uri_list_string(text);
+                            if !parsed.is_empty() {
+                                paths.extend(parsed);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Eğer bırakılan dosyalar bu uygulamanın kendi başlattığı dahili sürüklemeden geldiyse,
+            // bunu harici (external) bir transfer gibi ele alma!
+            let is_from_self = if let Some(last_time) = self.state.drag.last_drag_time {
+                if last_time.elapsed() < std::time::Duration::from_millis(3000) {
+                    paths.iter().any(|p| {
+                        let p_path = std::path::Path::new(p);
+                        self.state.drag.last_drag_sources.iter().any(|src| {
+                            p == src || std::path::Path::new(src) == p_path
+                        })
+                    })
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if is_from_self || self.state.drag.dragging {
+                log::debug!("Dahili sürükleme aynı pencereye bırakıldı veya iptal edildi, harici transfer atlanıyor: {:?}", paths);
+                self.state.drag.cancel();
+                self.state.drag.last_drag_sources.clear();
+                self.state.drag.last_drag_time = None;
+            } else if !paths.is_empty() {
+                let target_dir = self.state.active_context_path();
+                log::info!("External files dropped into {}: {:?}", target_dir, paths);
+                self.state.notify.info(format!("{} dosya bırakıldı -> {}", paths.len(), target_dir));
+                self.state.start_transfer(paths, target_dir, true);
+                ctx.request_repaint();
+            }
+        }
+
         // ── End of frame drag cleanup ────────────────────────────────────
         // If mouse button was released anywhere and no drop handled it, cancel drag
         if self.state.drag.dragging && ctx.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
             self.state.drag.cancel();
         }
+
+        // ── Session Auto-Save (Tabs & Split View Persistence) ────────────
+        // Periodically or upon changes, save tabs and split view to ~/.config/arch-explorer/session.json
+        self.state.save_session_state();
     }
 }
 

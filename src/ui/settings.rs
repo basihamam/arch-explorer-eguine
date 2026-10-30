@@ -423,6 +423,11 @@ fn tab_layout(ui: &mut Ui, t: &AexTheme, state: &mut AppState, engine: &mut Them
         engine.active.layout.sidebar_visible = sidebar_visible;
     }
 
+    let mut show_breadcrumb = engine.active.layout.show_breadcrumb;
+    if ui.checkbox(&mut show_breadcrumb, RichText::new("Use breadcrumb navigation (Address bar)").color(c.text_secondary()).size(t.typography.size_sm)).changed() {
+        engine.active.layout.show_breadcrumb = show_breadcrumb;
+    }
+
     ui.add_space(sp.xs);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Sidebar width").color(c.text_secondary()).size(t.typography.size_sm));

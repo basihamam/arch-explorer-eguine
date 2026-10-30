@@ -10,6 +10,9 @@ mod ui;
 mod backend;
 pub mod font_loader;
 
+#[cfg(test)]
+mod test_alani_tests;
+
 fn get_ipc_socket_path() -> std::path::PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
@@ -39,6 +42,21 @@ fn try_forward_to_existing_instance(target_path: &str) -> bool {
 }
 
 fn main() -> eframe::Result<()> {
+    // ── Tek İkili (Single Binary) Dahili Drag & Drop İşçisi ─────────
+    // Ayrı bir 'arch-explorer-drag' ikilisine gerek kalmadan, kendi kendini bu bayrakla çalıştırır.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--internal-dnd-worker" {
+        let file_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        crate::ui::file_grid::run_internal_dnd_worker(&file_args);
+        return Ok(());
+    }
+
+    // ── Native Wayland / Patched Winit DnD Desteği ───────────────────
+    // winit 0.30'a smithay-client-toolkit (SCTK) wl_data_device entegrasyonu yamalandı.
+    // Artık XWayland zorlamasına gerek kalmadan hem yerel Wayland compositöründe (Hyprland vb.)
+    // hem de X11 altında DroppedFile kusursuz çalışır!
+
+
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .filter_module("wgpu_core", log::LevelFilter::Warn)
@@ -47,7 +65,6 @@ fn main() -> eframe::Result<()> {
         .init();
 
     // --new-tab parametresi verilmedikçe her başlatma bağımsız bir yeni pencere açar
-    let args: Vec<String> = std::env::args().collect();
     let force_new_tab = args.iter().any(|a| a == "--new-tab");
     let target_path = args.iter().skip(1).find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| {
         std::env::current_dir()
@@ -66,9 +83,10 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([600.0, 400.0])
             .with_transparent(true)          // Hyprland blur için şeffaflık
             .with_decorations(false)         // custom titlebar
+            .with_drag_and_drop(true)        // OS seviyesinde dosya sürükle-bırak (DroppedFile/XDND) desteğini aç
             .with_app_id("arch-explorer"),   // Hyprland windowrulev2 için
 
-        renderer: eframe::Renderer::Wgpu,    // Wayland'da wgpu şart
+        renderer: eframe::Renderer::Wgpu,
 
         // Persistent egui state (panel boyutları, scroll pozisyonları vs)
         persist_window: true,

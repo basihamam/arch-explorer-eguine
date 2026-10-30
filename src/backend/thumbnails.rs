@@ -271,3 +271,143 @@ pub fn cache_entry_count() -> usize {
     std::fs::read_dir(cache_dir())
         .map(|d| d.count()).unwrap_or(0)
 }
+
+/// Wayland Drag & Drop için dosyanın gerçek thumbnail'ini veya şık simgesini 64x64 BGRA olarak üretir
+pub fn generate_drag_preview_bgra(paths: &[String]) -> Option<(u32, u32, Vec<u8>)> {
+    if paths.is_empty() { return None; }
+    let first = &paths[0];
+    let path = Path::new(first);
+    let count = paths.len();
+    const W: usize = 64;
+    const H: usize = 64;
+
+    // 1. Önce görsel veya video önbelleğindeki thumbnail'i dene
+    let mut loaded_img: Option<image::RgbaImage> = None;
+    if let Some(jpeg) = get_thumbnail(first, ThumbQuality::Low) {
+        if let Ok(dyn_img) = image::load_from_memory(&jpeg) {
+            loaded_img = Some(dyn_img.thumbnail_exact(W as u32, H as u32).to_rgba8());
+        }
+    }
+    if loaded_img.is_none() {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "ico") {
+            if let Ok(dyn_img) = image::open(path) {
+                loaded_img = Some(dyn_img.thumbnail_exact(W as u32, H as u32).to_rgba8());
+            }
+        }
+    }
+
+    let is_dir = path.is_dir();
+    let mut bgra = vec![0u8; W * H * 4];
+
+    if let Some(rgba) = loaded_img {
+        let (img_w, img_h) = rgba.dimensions();
+        let off_x = ((W as i32 - img_w as i32) / 2).max(0) as usize;
+        let off_y = ((H as i32 - img_h as i32) / 2).max(0) as usize;
+
+        for y in 0..H {
+            for x in 0..W {
+                let idx = (y * W + x) * 4;
+                // Yuvarlatılmış köşeler (radius = 7)
+                let rx = if x < 7 { 7 - x } else if x >= W - 7 { x - (W - 8) } else { 0 };
+                let ry = if y < 7 { 7 - y } else if y >= H - 7 { y - (H - 8) } else { 0 };
+                if rx * rx + ry * ry > 49 {
+                    continue; // Şeffaf dış alan
+                }
+
+                // Kenarlık vurgusu
+                let is_border = x == 0 || x == W - 1 || y == 0 || y == H - 1
+                    || (rx * rx + ry * ry >= 36);
+
+                if is_border {
+                    bgra[idx] = 255;     // B
+                    bgra[idx + 1] = 140; // G
+                    bgra[idx + 2] = 160; // R
+                    bgra[idx + 3] = 240; // A
+                    continue;
+                }
+
+                // Önizleme pikseli
+                if x >= off_x && x < off_x + img_w as usize && y >= off_y && y < off_y + img_h as usize {
+                    let ix = (x - off_x) as u32;
+                    let iy = (y - off_y) as u32;
+                    let p = rgba.get_pixel(ix, iy);
+                    let a = p[3] as f32 / 255.0;
+                    bgra[idx] = (p[2] as f32 * a) as u8;     // B (premultiplied)
+                    bgra[idx + 1] = (p[1] as f32 * a) as u8; // G
+                    bgra[idx + 2] = (p[0] as f32 * a) as u8; // R
+                    bgra[idx + 3] = p[3];                    // A
+                } else {
+                    bgra[idx] = 30;
+                    bgra[idx + 1] = 20;
+                    bgra[idx + 2] = 20;
+                    bgra[idx + 3] = 220;
+                }
+            }
+        }
+    } else {
+        // Görsel olmayan dosyalar için şık neon dosya/klasör kartı
+        let (base_b, base_g, base_r) = if is_dir {
+            (40, 180, 240) // Amber klasör sarısı
+        } else {
+            (240, 100, 130) // Şık mor-mavi belge tonu
+        };
+
+        for y in 0..H {
+            for x in 0..W {
+                let idx = (y * W + x) * 4;
+                let rx = if x < 8 { 8 - x } else if x >= W - 8 { x - (W - 9) } else { 0 };
+                let ry = if y < 8 { 8 - y } else if y >= H - 8 { y - (H - 9) } else { 0 };
+                if rx * rx + ry * ry > 64 {
+                    continue;
+                }
+
+                let is_border = x <= 1 || x >= W - 2 || y <= 1 || y >= H - 2 || (rx * rx + ry * ry >= 45);
+                if is_border {
+                    bgra[idx] = base_b;
+                    bgra[idx + 1] = base_g;
+                    bgra[idx + 2] = base_r;
+                    bgra[idx + 3] = 255;
+                } else if is_dir && y >= 14 && y <= 18 && x >= 8 && x <= 28 {
+                    // Klasör kapağı sekmesi
+                    bgra[idx] = base_b;
+                    bgra[idx + 1] = base_g;
+                    bgra[idx + 2] = base_r;
+                    bgra[idx + 3] = 230;
+                } else {
+                    // Yarı saydam gövde
+                    bgra[idx] = (base_b as f32 * 0.25) as u8 + 15;
+                    bgra[idx + 1] = (base_g as f32 * 0.25) as u8 + 15;
+                    bgra[idx + 2] = (base_r as f32 * 0.25) as u8 + 15;
+                    bgra[idx + 3] = 230;
+                }
+            }
+        }
+    }
+
+    // Çoklu seçim rozeti (+N badge)
+    if count > 1 {
+        let cx: i32 = 50;
+        let cy: i32 = 50;
+        let cr: i32 = 11;
+        for y in (cy - cr)..(cy + cr) {
+            for x in (cx - cr)..(cx + cr) {
+                if x >= 0 && x < W as i32 && y >= 0 && y < H as i32 {
+                    let dx = x - cx;
+                    let dy = y - cy;
+                    let dist_sq = dx * dx + dy * dy;
+                    if dist_sq <= cr * cr {
+                        let idx = (y as usize * W + x as usize) * 4;
+                        if dist_sq >= (cr - 2) * (cr - 2) {
+                            bgra[idx] = 255; bgra[idx + 1] = 255; bgra[idx + 2] = 255; bgra[idx + 3] = 255;
+                        } else {
+                            bgra[idx] = 100; bgra[idx + 1] = 50; bgra[idx + 2] = 255; bgra[idx + 3] = 245;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Some((W as u32, H as u32, bgra))
+}

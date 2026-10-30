@@ -66,9 +66,10 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             };
 
             let just_entered_id = ui.id().with("addr_just_entered");
+            let show_breadcrumb = t.layout.show_breadcrumb;
 
-            if edit_mode {
-                // Düzenleme modu — TextEdit
+            if edit_mode || !show_breadcrumb {
+                // Düzenleme modu veya breadcrumb kapalıysa — TextEdit
                 let te_id = ui.id().with("addr_textedit");
 
                 let resp = ui.add(
@@ -81,11 +82,10 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                         .desired_width(addr_width),
                 );
 
-                // request_focus SADECE ilk frame'de — her frame çağrılırsa
-                // lost_focus() hiç tetiklenemiyor (focus sürekli geri alınıyor)
+                // request_focus SADECE edit_mode'a geçildiğinde ilk frame'de
                 let just_entered: bool = ui.ctx()
                     .data_mut(|d| d.get_temp(just_entered_id).unwrap_or(true));
-                if just_entered {
+                if show_breadcrumb && just_entered {
                     resp.request_focus();
                     let char_len = state.nav.current_path.chars().count();
                     let mut te_state = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
@@ -97,16 +97,17 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                     ui.ctx().data_mut(|d| d.insert_temp(just_entered_id, false));
                 }
 
-                // Dışarı tıklanınca veya focus kaybolunca çık
-                if resp.lost_focus() {
+                if resp.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
                     if ui.input(|i| i.key_pressed(Key::Enter)) {
                         let path = state.nav.current_path.clone();
                         state.navigate(path);
                     }
-                    edit_mode = false;
-                    ui.ctx().data_mut(|d| d.insert_temp::<bool>(just_entered_id, true));
+                    if show_breadcrumb {
+                        edit_mode = false;
+                        ui.ctx().data_mut(|d| d.insert_temp::<bool>(just_entered_id, true));
+                    }
                 }
-                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.input(|i| i.key_pressed(Key::Escape)) && show_breadcrumb {
                     edit_mode = false;
                     ui.ctx().data_mut(|d| d.insert_temp::<bool>(just_entered_id, true));
                 }
@@ -182,10 +183,10 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                 };
 
                 if icon_btn(ui, t, icon(t, "list"), list_color).clicked() {
-                    state.view_mode = ViewMode::List;
+                    state.set_view_mode_for_current_dir(ViewMode::List);
                 }
                 if icon_btn(ui, t, icon(t, "grid"), grid_color).clicked() {
-                    state.view_mode = ViewMode::Grid;
+                    state.set_view_mode_for_current_dir(ViewMode::Grid);
                 }
             });
         });

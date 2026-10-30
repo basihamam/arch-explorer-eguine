@@ -75,10 +75,9 @@ pub struct DragDropResult {
     pub errors: Vec<String>,
 }
 
-fn format_permissions(meta: &fs::Metadata) -> String {
+pub(crate) fn format_permissions(meta: &fs::Metadata) -> String {
     use std::os::unix::fs::PermissionsExt;
     let mode = meta.permissions().mode();
-    let chars = ['x', 'w', 'r'];
     let mut perm = String::with_capacity(10);
 
     if meta.is_dir() { perm.push('d'); }
@@ -86,13 +85,9 @@ fn format_permissions(meta: &fs::Metadata) -> String {
     else { perm.push('-'); }
 
     for shift in [6u32, 3, 0] {
-        for (i, &c) in chars.iter().rev().enumerate() {
-            if mode & (1 << (shift + i as u32)) != 0 {
-                perm.push(c);
-            } else {
-                perm.push('-');
-            }
-        }
+        perm.push(if mode & (1 << (shift + 2)) != 0 { 'r' } else { '-' });
+        perm.push(if mode & (1 << (shift + 1)) != 0 { 'w' } else { '-' });
+        perm.push(if mode & (1 << (shift + 0)) != 0 { 'x' } else { '-' });
     }
     perm
 }
@@ -272,6 +267,16 @@ pub fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListin
         return Err(format!("Dizin değil: {}", path));
     }
 
+    // Eğer bu bir sembolik bağ (symlink) ise, gerçek orijinal konumuna çözümle (canonicalize)
+    // Böylece ~/cikti gibi symlink üzerinden girilince de orijinal konumdan girilmiş gibi tüm dosyalar eksiksiz görünür!
+    let (dir_path, resolved_path) = match fs::canonicalize(&dir_path) {
+        Ok(canon) => {
+            let s = canon.to_string_lossy().to_string();
+            (canon, s)
+        }
+        Err(_) => (dir_path.clone(), path.clone()),
+    };
+
     let read_dir = fs::read_dir(&dir_path)
         .map_err(|e| format!("Dizin okunamadı: {}", e))?;
 
@@ -298,7 +303,7 @@ pub fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListin
     };
 
     Ok(DirectoryListing {
-        path,
+        path: resolved_path,
         entries,
         parent,
         total_items: total,
@@ -413,7 +418,8 @@ pub fn list_directory_with_sudo(path: String, show_hidden: bool, password: &str)
     let py_script = r#"
 import os, json, sys, stat, datetime
 
-target_path = sys.argv[1]
+raw_path = sys.argv[1]
+target_path = os.path.realpath(raw_path) if os.path.exists(raw_path) else raw_path
 show_hidden = sys.argv[2] == "1"
 entries = []
 try:

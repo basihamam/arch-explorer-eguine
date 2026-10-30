@@ -323,6 +323,8 @@ impl Default for AexEffects {
 // Layout
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn default_show_breadcrumb() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AexLayout {
     pub sidebar_width:    f32,
@@ -334,6 +336,8 @@ pub struct AexLayout {
     pub item_height:      f32,   // list view row
     pub grid_item_size:   f32,   // grid view item
     pub grid_gap:         f32,
+    #[serde(default = "default_show_breadcrumb")]
+    pub show_breadcrumb:  bool,
 }
 
 impl Default for AexLayout {
@@ -346,8 +350,9 @@ impl Default for AexLayout {
             toolbar_height:   44.0,
             statusbar_height: 26.0,
             item_height:      32.0,
-            grid_item_size:   160.0,
+            grid_item_size:   100.0,
             grid_gap:         10.0,
+            show_breadcrumb:  true,
         }
     }
 }

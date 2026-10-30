@@ -2,3 +2,8 @@
 *.bak
 Cargo_new.toml
 .git
+*.zip
+__pycache__/
+arch-explorer-drag
+arch-explorer/
+*.tar.gz

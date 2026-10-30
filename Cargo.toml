@@ -52,6 +52,7 @@ env_logger    = "0.11"
 libc          = "0.2"
 base64        = "0.22"
 open          = "5"
+winit         = "0.30"
 
 # ── Clipboard (sistem clipboard — egui kendi içinde sadece text yapıyor) ─────
 arboard       = "3"     # Wayland + X11 clipboard, dosya path'leri için
@@ -71,3 +72,6 @@ opt-level = 3
 
 [profile.release.package.eframe]
 opt-level = 3
+
+[patch.crates-io]
+winit = { path = "crates/winit" }

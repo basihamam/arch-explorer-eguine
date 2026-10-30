@@ -243,6 +243,10 @@ fn bookmark_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, bm: &Bookmark)
         .unwrap_or(false);
     let is_drag_over = state.drag.dragging && pointer_over;
 
+    // Smooth hover animation
+    let bm_hov_id = Id::new(format!("bm_hov_{}", bm.path));
+    let bm_hov_factor = ui.ctx().animate_bool(bm_hov_id, resp.hovered() && !is_active && !is_drag_over);
+
     let bg = if is_active {
         Color32::from_rgba_unmultiplied(
             c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(),
@@ -250,15 +254,14 @@ fn bookmark_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, bm: &Bookmark)
         )
     } else if is_drag_over {
         Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 45)
+    } else if bm_hov_factor > 0.001 {
+        let alpha = (255.0 * bm_hov_factor) as u8;
+        Color32::from_rgba_unmultiplied(c.bg_surface0().r(), c.bg_surface0().g(), c.bg_surface0().b(), alpha)
     } else {
         Color32::TRANSPARENT
     };
 
-    if resp.hovered() && bg == Color32::TRANSPARENT {
-        ui.painter().rect_filled(item_rect, Rounding::same(s.radius_sm), c.bg_surface0());
-    } else {
-        ui.painter().rect_filled(item_rect, Rounding::same(s.radius_sm), bg);
-    }
+    ui.painter().rect_filled(item_rect, Rounding::same(s.radius_sm), bg);
 
     if is_active {
         // Sol indicator çizgi + subtle border

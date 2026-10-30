@@ -897,7 +897,7 @@ fn render_text(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
             ..Default::default()
         }
         .show(ui, |ui| {
-            egui::ScrollArea::both()
+            egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(
@@ -906,7 +906,7 @@ fn render_text(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
                                 .font(FontId::new(9.5, FontFamily::Monospace))
                                 .color(c.text_secondary())
                         )
-                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .wrap_mode(egui::TextWrapMode::Wrap)
                     );
                 });
         });
@@ -968,32 +968,81 @@ fn render_dir(ui: &mut Ui, t: &AexTheme, preview: &FilePreview, path: &str, stat
         );
     });
 
-    ui.add_space(sp.md);
+    ui.add_space(sp.sm);
 
     if let Some(ref entries) = preview.dir_entries {
-        let avail_w = ui.available_width().max(40.0);
-        // Approx 7.0 pixels per char for size_xs
-        let max_chars = ((avail_w - 30.0) / 7.0).max(8.0) as usize;
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("KLASÖR İÇERİĞİ")
+                    .color(c.text_hint())
+                    .size(t.typography.size_xs)
+                    .strong()
+            );
+        });
+        ui.add_space(sp.xs);
 
-        for (name, is_dir) in entries {
-            let display_name = format_preview_entry(name, *is_dir, max_chars);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(if *is_dir { icon(t, "folder") } else { icon(t, "file") })
-                        .color(if *is_dir { c.accent() } else { c.text_hint() })
-                        .size(13.0)
+        let row_h = 24.0_f32;
+        for (name, is_sub_dir) in entries {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+            let is_hovered = resp.hovered();
+
+            if is_hovered {
+                let hover_bg = Color32::from_rgba_unmultiplied(
+                    c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), 70
                 );
-                ui.add_space(6.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&display_name)
-                            .color(c.text_secondary())
-                            .size(t.typography.size_xs)
-                    ).truncate()
-                ).on_hover_text(name);
+                ui.painter().rect_filled(rect, Rounding::same(t.shape.radius_sm), hover_bg);
+            }
+
+            let icon_str = if *is_sub_dir { icon(t, "folder") } else { icon(t, "file") };
+            let icon_col = if *is_sub_dir { c.accent() } else { c.text_hint() };
+
+            let icon_pos = Pos2::new(rect.min.x + 4.0, rect.center().y);
+            ui.painter().text(
+                icon_pos,
+                Align2::LEFT_CENTER,
+                icon_str,
+                FontId::new(13.0, FontFamily::Monospace),
+                icon_col,
+            );
+
+            let text_left = rect.min.x + 24.0;
+            let text_max_w = (rect.max.x - text_left - 50.0).max(20.0);
+            let approx_chars = (text_max_w / 7.0).floor() as usize;
+            let display_name = format_preview_entry(name, *is_sub_dir, approx_chars.max(6));
+
+            ui.painter().text(
+                Pos2::new(text_left, rect.center().y),
+                Align2::LEFT_CENTER,
+                display_name,
+                FontId::new(t.typography.size_xs + 0.5, FontFamily::Proportional),
+                c.text_secondary(),
+            );
+
+            let sub_label = if *is_sub_dir { "klasör" } else { "" };
+            if !sub_label.is_empty() {
+                ui.painter().text(
+                    Pos2::new(rect.max.x - 4.0, rect.center().y),
+                    Align2::RIGHT_CENTER,
+                    sub_label,
+                    FontId::new(9.5, FontFamily::Proportional),
+                    c.text_hint(),
+                );
+            }
+
+            if resp.double_clicked() && *is_sub_dir {
+                state.navigate(format!("{}/{}", path.trim_end_matches('/'), name));
+            }
+
+            resp.on_hover_text(if *is_sub_dir {
+                format!("{}\n(Girmek için çift tıkla)", name)
+            } else {
+                name.clone()
             });
+            ui.add_space(2.0);
         }
+
         if item_count > entries.len() {
+            ui.add_space(sp.xs);
             ui.label(
                 RichText::new(format!("…ve {} öğe daha", item_count - entries.len()))
                     .color(c.text_hint())

@@ -319,8 +319,127 @@ except Exception:
 }
 
 /// Clipboard içeriğini görüntüle (UI'da "kesilmiş" dosyaları soluklaştırmak için)
+/// Eğer dahili clipboard boşsa veya güncel değilse sistem panosundan (Wayland/X11) dosyaları okur
 pub fn clipboard_get() -> Option<ClipboardState> {
-    CLIPBOARD.lock().ok()?.clone()
+    if let Ok(guard) = CLIPBOARD.lock() {
+        if let Some(ref cb) = *guard {
+            return Some(cb.clone());
+        }
+    }
+
+    // Dahili pano boşsa sistem panosunu oku (Firefox, Chrome, Nautilus, Dolphin vb.)
+    let system_paths = get_files_from_system_clipboard();
+    if !system_paths.is_empty() {
+        return Some(ClipboardState {
+            op: ClipboardOp::Copy,
+            paths: system_paths,
+        });
+    }
+
+    None
+}
+
+/// Wayland (wl-paste) ve X11 (xclip) üzerinden panodaki dosya yollarını çeker
+pub fn get_files_from_system_clipboard() -> Vec<String> {
+    // 1. Wayland text/uri-list
+    if let Ok(out) = std::process::Command::new("wl-paste")
+        .args(["-t", "text/uri-list"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let paths = parse_uri_list_string(&s);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
+    // 2. Wayland x-special/gnome-copied-files
+    if let Ok(out) = std::process::Command::new("wl-paste")
+        .args(["-t", "x-special/gnome-copied-files"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let paths = parse_uri_list_string(&s);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
+    // 3. Wayland text/plain
+    if let Ok(out) = std::process::Command::new("wl-paste")
+        .args(["--no-newline"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let paths = parse_uri_list_string(&s);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
+    // 4. X11 xclip
+    if let Ok(out) = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "text/uri-list", "-o"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let paths = parse_uri_list_string(&s);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+pub fn parse_uri_list_string(raw: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "copy" || trimmed == "cut" {
+            continue;
+        }
+        let clean = if let Some(stripped) = trimmed.strip_prefix("file://") {
+            percent_decode_path(stripped)
+        } else if trimmed.starts_with('/') {
+            trimmed.to_string()
+        } else {
+            continue;
+        };
+
+        if std::path::Path::new(&clean).exists() {
+            results.push(clean);
+        }
+    }
+    results
+}
+
+fn percent_decode_path(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let input_bytes = input.as_bytes();
+    let mut i = 0;
+    while i < input_bytes.len() {
+        if input_bytes[i] == b'%' && i + 2 < input_bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&input_bytes[i + 1..i + 3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    bytes.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        bytes.push(input_bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 /// Clipboard'ı temizle
@@ -656,7 +775,7 @@ fn prune_action_backups(action: &UndoAction) {
     }
 }
 
-fn push_undo(action: UndoAction) -> Result<(), String> {
+pub(crate) fn push_undo(action: UndoAction) -> Result<(), String> {
     let mut stack = UNDO_STACK.lock().map_err(|e| e.to_string())?;
     if stack.len() >= MAX_UNDO {
         let evicted = stack.remove(0);

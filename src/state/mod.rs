@@ -277,6 +277,42 @@ pub fn save_perf_settings_to_disk(cfg: &PerfSettings) {
     }
 }
 
+// ── Session Persistence (Tabs & Split View State like Firefox) ────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionState {
+    pub left_tabs: Vec<String>,
+    pub left_active_idx: usize,
+    pub dual_pane: bool,
+    pub right_tabs: Option<Vec<String>>,
+    pub right_active_idx: Option<usize>,
+}
+
+pub fn session_state_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("arch-explorer")
+        .join("session.json")
+}
+
+pub fn load_session_state() -> Option<SessionState> {
+    let p = session_state_path();
+    if !p.exists() { return None; }
+    std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+pub fn save_session_state_to_disk(cfg: &SessionState) {
+    let p = session_state_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(cfg) {
+        let _ = std::fs::write(p, json);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RootAuthRequest {
     pub title: String,
@@ -297,7 +333,7 @@ pub struct ContextMenuState {
 
 // ─── NavigationState ─────────────────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct NavigationState {
     pub current_path: String,
     pub history: VecDeque<String>,
@@ -305,7 +341,7 @@ pub struct NavigationState {
 }
 
 impl NavigationState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let home = dirs::home_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());
@@ -315,6 +351,16 @@ impl NavigationState {
 
         Self {
             current_path: home,
+            history,
+            history_idx: 0,
+        }
+    }
+
+    pub fn with_path(path: String) -> Self {
+        let mut history = VecDeque::new();
+        history.push_back(path.clone());
+        Self {
+            current_path: path,
             history,
             history_idx: 0,
         }
@@ -372,9 +418,16 @@ impl NavigationState {
     }
 
     pub fn go_up(&mut self) -> Option<String> {
-        let parent = std::path::Path::new(&self.current_path)
+        let trimmed = self.current_path.trim_end_matches('/');
+        if trimmed.is_empty() || trimmed == "/" {
+            return None;
+        }
+        let parent = std::path::Path::new(trimmed)
             .parent()
-            .map(|p| p.to_string_lossy().to_string());
+            .map(|p| {
+                let s = p.to_string_lossy().to_string();
+                if s.is_empty() { "/".to_string() } else { s }
+            });
 
         if let Some(ref p) = parent {
             self.push(p.clone());
@@ -828,23 +881,37 @@ pub struct DragState {
     pub dragging: bool,
     pub sources: Vec<String>,
     pub copy_mode: bool,
+    pub target_dir: Option<String>,
+    pub last_drag_sources: Vec<String>,
+    pub last_drag_time: Option<std::time::Instant>,
 }
 
 impl DragState {
     fn new() -> Self {
-        Self { dragging: false, sources: Vec::new(), copy_mode: false }
+        Self {
+            dragging: false,
+            sources: Vec::new(),
+            copy_mode: false,
+            target_dir: None,
+            last_drag_sources: Vec::new(),
+            last_drag_time: None,
+        }
     }
 
     pub fn start(&mut self, sources: Vec<String>, copy: bool) {
         self.dragging = true;
+        self.last_drag_sources = sources.clone();
+        self.last_drag_time = Some(std::time::Instant::now());
         self.sources = sources;
         self.copy_mode = copy;
+        self.target_dir = None;
     }
 
     pub fn cancel(&mut self) {
         self.dragging = false;
         self.sources.clear();
         self.copy_mode = false;
+        self.target_dir = None;
     }
 }
 
@@ -876,6 +943,7 @@ pub struct TerminalState {
     pub is_running: bool,
     pub should_focus: bool,
     pub scroll_to_bottom: bool,
+    pub is_focused: bool,
 }
 
 impl TerminalState {
@@ -899,6 +967,7 @@ impl TerminalState {
             is_running: false,
             should_focus: false,
             scroll_to_bottom: false,
+            is_focused: false,
         }
     }
 
@@ -1252,6 +1321,7 @@ pub struct AppState {
     pub pending_listing: Option<DirectoryListing>,
     pub pending_error:   Option<String>,
     pub pending_select_paths: Option<Vec<String>>,
+    pub restored_highlights: std::collections::HashMap<String, std::time::Instant>,
 
     // Mount işlemi için şifre gerektiren durumlar
     // (device_path, label, error_msg)
@@ -1288,6 +1358,7 @@ pub struct AppState {
     pub delete_error_dialog: Option<DeleteErrorDialogState>,
     pub always_root: bool,
     pub is_root_active: bool,
+    pub dir_view_modes: std::collections::HashMap<String, String>,
     pub list_columns: ListViewColumns,
     pub perf_settings: PerfSettings,
     pub pending_transfer: Option<TransferRequest>,
@@ -1341,8 +1412,32 @@ pub struct DeleteErrorDialogState {
 impl AppState {
     pub fn new() -> Self {
         let prev_cfg = load_preview_settings();
-        Self {
-            nav:       NavigationState::new(),
+        let default_home = dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+
+        let session = load_session_state();
+
+        let mut initial_nav = NavigationState::new();
+        let initial_tabs = if let Some(ref sess) = session {
+            if !sess.left_tabs.is_empty() {
+                let mut tab_entries: Vec<TabEntry> = sess.left_tabs.iter().map(|p| TabEntry::new(p.clone())).collect();
+                let active = sess.left_active_idx.min(tab_entries.len().saturating_sub(1));
+                let active_path = tab_entries[active].path.clone();
+                initial_nav = NavigationState::with_path(active_path);
+                TabState {
+                    tabs: tab_entries,
+                    active_idx: active,
+                }
+            } else {
+                TabState::new(default_home.clone())
+            }
+        } else {
+            TabState::new(default_home.clone())
+        };
+
+        let mut app_state = Self {
+            nav:       initial_nav,
             dir:       DirectoryState::new(),
             sidebar:   SidebarState::new(),
             panels:    PanelState::new(),
@@ -1355,11 +1450,7 @@ impl AppState {
             view_scale:  crate::theme::load_saved_view_scale().unwrap_or(1.0).clamp(0.4, 3.0),
             needs_reload: true,
 
-            tabs: TabState::new(
-                dirs::home_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/".to_string())
-            ),
+            tabs: initial_tabs,
 
             dual_pane:   false,
             active_pane: PaneId::Left,
@@ -1373,6 +1464,7 @@ impl AppState {
             pending_listing:        None,
             pending_error:          None,
             pending_select_paths:   None,
+            restored_highlights:    std::collections::HashMap::new(),
             pending_mount_password: None,
             pending_mount_wrong:    None,
             pending_checksum:          None,
@@ -1404,10 +1496,35 @@ impl AppState {
             delete_error_dialog:      None,
             always_root:              load_root_settings().always_root,
             is_root_active:           false,
+            dir_view_modes:           crate::theme::load_dir_view_modes(),
             list_columns:             load_list_columns(),
             perf_settings:            load_perf_settings(),
             pending_transfer:         None,
+        };
+
+        if let Some(sess) = session {
+            if sess.dual_pane {
+                let right_tabs = if let Some(r_tabs) = sess.right_tabs {
+                    if !r_tabs.is_empty() {
+                        let tab_entries: Vec<TabEntry> = r_tabs.iter().map(|p| TabEntry::new(p.clone())).collect();
+                        let active = sess.right_active_idx.unwrap_or(0).min(tab_entries.len().saturating_sub(1));
+                        TabState { tabs: tab_entries, active_idx: active }
+                    } else {
+                        TabState::new(default_home)
+                    }
+                } else {
+                    TabState::new(default_home)
+                };
+
+                let mut right_snap = PaneSnapshot::from_state(&app_state, PaneId::Right);
+                right_snap.tabs = right_tabs;
+                right_snap.nav = NavigationState::with_path(right_snap.tabs.active().path.clone());
+                app_state.right_pane = Some(right_snap);
+                app_state.dual_pane = true;
+            }
         }
+
+        app_state
     }
 
     pub fn save_root_settings(&self) {
@@ -1435,6 +1552,23 @@ impl AppState {
             custom_dir: self.preview_custom_dir,
         };
         save_preview_settings_to_disk(&cfg);
+    }
+
+    pub fn save_session_state(&self) {
+        let left_paths: Vec<String> = self.tabs.tabs.iter().map(|t| t.path.clone()).collect();
+        let right_data = self.right_pane.as_ref().map(|rp| {
+            let r_paths: Vec<String> = rp.tabs.tabs.iter().map(|t| t.path.clone()).collect();
+            (r_paths, rp.tabs.active_idx)
+        });
+
+        let sess = SessionState {
+            left_tabs: left_paths,
+            left_active_idx: self.tabs.active_idx,
+            dual_pane: self.dual_pane,
+            right_tabs: right_data.as_ref().map(|(p, _)| p.clone()),
+            right_active_idx: right_data.map(|(_, idx)| idx),
+        };
+        save_session_state_to_disk(&sess);
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────
@@ -1597,6 +1731,26 @@ impl AppState {
 
     pub fn apply_pending(&mut self) {
         if let Some(listing) = self.pending_listing.take() {
+            let path_clean = listing.path.trim_end_matches('/');
+            let key = if path_clean.is_empty() { "/" } else { path_clean };
+
+            // Per-folder view mode memory:
+            // 1. Kullanıcı bu klasör için daha önce bir ayar seçtiyse onu hatırla
+            // 2. Yoksa akıllı otomatik geçiş: az dosya (<= 25) Grid, çok dosya (> 25) List view!
+            if let Some(saved_mode) = self.dir_view_modes.get(key) {
+                match saved_mode.as_str() {
+                    "list" => self.view_mode = ViewMode::List,
+                    "grid" => self.view_mode = ViewMode::Grid,
+                    _ => {}
+                }
+            } else {
+                if listing.entries.len() > 25 {
+                    self.view_mode = ViewMode::List;
+                } else {
+                    self.view_mode = ViewMode::Grid;
+                }
+            }
+
             self.dir.load_listing(listing);
             if let Some(pending) = self.pending_select_paths.take() {
                 self.selection.select_many(&pending);
@@ -1608,10 +1762,40 @@ impl AppState {
         }
     }
 
+    pub fn set_view_mode_for_current_dir(&mut self, mode: ViewMode) {
+        self.view_mode = mode.clone();
+        let mode_str = match mode {
+            ViewMode::List => "list",
+            ViewMode::Grid => "grid",
+            _ => "grid",
+        };
+        let path_clean = self.nav.current_path.trim_end_matches('/');
+        let key = if path_clean.is_empty() { "/" } else { path_clean };
+        self.dir_view_modes.insert(key.to_string(), mode_str.to_string());
+        crate::theme::save_dir_view_mode(key, mode_str);
+    }
+
     pub fn select_paths_and_queue(&mut self, paths: Vec<String>) {
         if paths.is_empty() { return; }
+        let now = std::time::Instant::now();
+        for p in &paths {
+            self.restored_highlights.insert(p.clone(), now);
+        }
         self.selection.select_many(&paths);
         self.pending_select_paths = Some(paths);
+    }
+
+    /// Dosya yeni geri getirildiğinde (Undo) veya yapıştırıldığında parıldama/parıltı efekti (0.0..1.0)
+    pub fn get_highlight_pulse(&self, path: &str) -> Option<f32> {
+        if let Some(instant) = self.restored_highlights.get(path) {
+            let elapsed = instant.elapsed().as_secs_f32();
+            if elapsed < 2.5 {
+                let decay = 1.0 - (elapsed / 2.5);
+                let wave = (elapsed * 8.0).sin().abs();
+                return Some(decay * (0.35 + 0.65 * wave));
+            }
+        }
+        None
     }
 
     pub fn duplicate_selected(&mut self) {
@@ -1834,7 +2018,8 @@ impl AppState {
             }
 
             if dst_path.exists() {
-                if src_path.is_dir() && dst_path.is_dir() {
+                if src_path.is_dir() && dst_path.is_dir() && src != &dst {
+                    // İki aynı klasör varsa: İçindeki öğelere bak ve her biri için çakışmaları topla
                     let mut dummy_undos = Vec::new();
                     let mut dummy_count = 0;
                     collect_dir_conflicts_recursive(src_path, dst_path, copy, &mut conflicts, &mut dummy_undos, &mut dummy_count);
@@ -2367,7 +2552,7 @@ impl AppState {
         self.search        = snap.search.clone();
         self.drag          = snap.drag.clone();
         self.view_mode     = snap.view_mode.clone();
-        self.view_scale    = snap.view_scale;
+        // view_scale her iki panel arasında senkronize kalır, zıplama yapmaz
         self.tabs          = snap.tabs.clone();
         self.needs_reload  = snap.needs_reload;
         self.panels.context_menu = snap.context_menu.clone();

@@ -308,6 +308,47 @@ pub fn save_view_scale(scale: f32) {
     }
 }
 
+pub fn load_dir_view_modes() -> std::collections::HashMap<String, String> {
+    let content = fs::read_to_string(settings_path()).ok().unwrap_or_default();
+    let table: toml::Table = toml::from_str(&content).ok().unwrap_or_default();
+    let mut map = std::collections::HashMap::new();
+    if let Some(tbl) = table.get("dir_view_modes").and_then(|v| v.as_table()) {
+        for (k, v) in tbl {
+            if let Some(s) = v.as_str() {
+                map.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    map
+}
+
+pub fn save_dir_view_mode(dir_path: &str, mode: &str) {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    let mut table: toml::Table = fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| toml::from_str(&c).ok())
+        .unwrap_or_default();
+
+    let clean = dir_path.trim_end_matches('/');
+    let key = if clean.is_empty() { "/" } else { clean };
+
+    let mut modes_table = table.get("dir_view_modes")
+        .and_then(|v| v.as_table())
+        .cloned()
+        .unwrap_or_default();
+
+    modes_table.insert(key.to_string(), toml::Value::String(mode.to_string()));
+    table.insert("dir_view_modes".to_string(), toml::Value::Table(modes_table));
+
+    if let Ok(serialized) = toml::to_string_pretty(&table) {
+        fs::write(&path, serialized).ok();
+    }
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // src/theme/defaults.rs inline (built-in temalar)

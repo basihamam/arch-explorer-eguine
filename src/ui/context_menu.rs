@@ -101,7 +101,11 @@ pub fn render(
 
                     ctx_sep(ui, t);
 
-                    let has_selection = state.selection.count() > 0;
+                    let mut selected = state.selected_paths();
+                    if selected.is_empty() || !selected.contains(&entry.path) {
+                        selected = vec![entry.path.clone()];
+                    }
+                    let has_selection = !selected.is_empty();
                     let has_clipboard = crate::backend::clipboard::clipboard_get()
                         .map(|cb| !cb.paths.is_empty())
                         .unwrap_or(false);
@@ -109,9 +113,8 @@ pub fn render(
                     // Cut
                     if has_selection {
                         if ctx_item(ui, t, icon(t, "cut"), "Cut", Some("Ctrl+X")).ctx_act() {
-                            let paths = state.selected_paths();
-                            let count = paths.len();
-                            crate::backend::clipboard::clipboard_cut(paths).ok();
+                            let count = selected.len();
+                            crate::backend::clipboard::clipboard_cut(selected.clone()).ok();
                             state.notify.info(format!("{} öğe panoya kesildi", count));
                             state.panels.close_context_menu();
                         }
@@ -122,9 +125,8 @@ pub fn render(
                     // Copy
                     if has_selection {
                         if ctx_item(ui, t, icon(t, "copy"), "Copy", Some("Ctrl+C")).ctx_act() {
-                            let paths = state.selected_paths();
-                            let count = paths.len();
-                            crate::backend::clipboard::clipboard_copy(paths).ok();
+                            let count = selected.len();
+                            crate::backend::clipboard::clipboard_copy(selected.clone()).ok();
                             state.notify.info(format!("{} öğe panoya kopyalandı", count));
                             state.panels.close_context_menu();
                         }
@@ -171,7 +173,7 @@ pub fn render(
                     // Rename / Bulk Rename
                     let rename_label = if state.selection.count() >= 2 { "Bulk Rename…" } else { "Rename" };
                     if has_selection {
-                        if ctx_item(ui, t, icon(t, "rename"), rename_label, Some("F2")).clicked() {
+                        if ctx_item(ui, t, icon(t, "rename"), rename_label, Some("F2")).ctx_act() {
                             if state.selection.count() >= 2 { state.panels.open_bulk_rename(); }
                             else { state.start_rename(&entry.path.clone()); }
                             state.panels.close_context_menu();
@@ -183,12 +185,12 @@ pub fn render(
                     ctx_sep(ui, t);
 
                     // New Folder / New File
-                    if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).clicked() {
+                    if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).ctx_act() {
                         let path = unique_new_folder_path(&state.nav.current_path);
                         try_create_dir_or_elevate(state, path);
                         state.panels.close_context_menu();
                     }
-                    if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).clicked() {
+                    if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).ctx_act() {
                         let path = unique_new_file_path(&state.nav.current_path);
                         try_create_file_or_elevate(state, path);
                         state.panels.close_context_menu();
@@ -202,8 +204,8 @@ pub fn render(
                     // Delete / Restore (trash / permanent)
                     if has_selection {
                         if is_current_in_trash {
-                            if ctx_item_colored(ui, t, icon(t, "refresh"), "Restore from Trash", None, c.accent()).clicked() {
-                                let paths = state.selected_paths();
+                            if ctx_item_colored(ui, t, icon(t, "refresh"), "Restore from Trash", None, c.accent()).ctx_act() {
+                                let paths = selected.clone();
                                 let mut restored = Vec::new();
                                 for p in &paths {
                                     match crate::backend::fs_ops::restore_from_trash(p) {
@@ -219,19 +221,19 @@ pub fn render(
                                 }
                                 state.panels.close_context_menu();
                             }
-                            if ctx_item_colored(ui, t, icon(t, "error"), "Delete Permanently", Some("Del"), c.danger()).clicked() {
-                                let paths = state.selected_paths();
+                            if ctx_item_colored(ui, t, icon(t, "error"), "Delete Permanently", Some("Del"), c.danger()).ctx_act() {
+                                let paths = selected.clone();
                                 try_delete_or_elevate(state, paths, true);
                                 state.panels.close_context_menu();
                             }
                         } else {
-                            if ctx_item_colored(ui, t, icon(t, "delete"), "Move to Trash", Some("Del"), c.warning()).clicked() {
-                                let paths = state.selected_paths();
+                            if ctx_item_colored(ui, t, icon(t, "delete"), "Move to Trash", Some("Del"), c.warning()).ctx_act() {
+                                let paths = selected.clone();
                                 try_delete_or_elevate(state, paths, false);
                                 state.panels.close_context_menu();
                             }
-                            if ctx_item_colored(ui, t, icon(t, "error"), "Delete Permanently", Some("Shift+Del"), c.danger()).clicked() {
-                                let paths = state.selected_paths();
+                            if ctx_item_colored(ui, t, icon(t, "error"), "Delete Permanently", Some("Shift+Del"), c.danger()).ctx_act() {
+                                let paths = selected.clone();
                                 try_delete_or_elevate(state, paths, true);
                                 state.panels.close_context_menu();
                             }
@@ -284,7 +286,7 @@ pub fn render(
                                     ui.set_width(sub_w - sp.sm * 2.0);
 
                                     // Open With
-                                    if ctx_item(ui, t, icon(t, "open_with"), "Open With…", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "open_with"), "Open With…", None).ctx_act() {
                                         state.panels.open_open_with(entry.path.clone());
                                         state.panels.close_context_menu();
                                         ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
@@ -292,7 +294,7 @@ pub fn render(
 
                                     // Open Terminal Here
                                     let dir_path = if entry.is_dir { entry.path.clone() } else { state.nav.current_path.clone() };
-                                    if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).ctx_act() {
                                         state.open_terminal(Some(dir_path));
                                         state.panels.close_context_menu();
                                         ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
@@ -301,7 +303,7 @@ pub fn render(
                                     ctx_sep(ui, t);
 
                                     // Create Symlink
-                                    if ctx_item(ui, t, icon(t, "symlink"), "Create Symlink", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "symlink"), "Create Symlink", None).ctx_act() {
                                         let src  = entry.path.clone();
                                         let dest = format!("{}/{}.lnk", state.nav.current_path, entry.name);
                                         std::os::unix::fs::symlink(&src, &dest).ok();
@@ -311,7 +313,7 @@ pub fn render(
                                     }
 
                                     // Add to Bookmarks
-                                    if ctx_item(ui, t, icon(t, "star"), "Add to Bookmarks", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "star"), "Add to Bookmarks", None).ctx_act() {
                                         crate::backend::fs_ops::add_bookmark(entry.name.clone(), entry.path.clone()).ok();
                                         state.sidebar.bookmarks = crate::backend::fs_ops::get_bookmarks();
                                         state.panels.close_context_menu();
@@ -327,13 +329,13 @@ pub fn render(
                                         "zip"|"tar"|"gz"|"tgz"|"bz2"|"xz"|"zst"|"7z"|"rar"
                                     );
                                     if is_archive {
-                                        if ctx_item(ui, t, icon(t, "folder_open"), "Extract Here", None).clicked() {
+                                        if ctx_item(ui, t, icon(t, "folder_open"), "Extract Here", None).ctx_act() {
                                             state.pending_extract = Some((entry.path.clone(), state.nav.current_path.clone()));
                                             state.panels.close_context_menu();
                                             ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
                                         }
                                     }
-                                    if ctx_item(ui, t, icon(t, "copy"), "Compress…", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "copy"), "Compress…", None).ctx_act() {
                                         state.panels.open_compress();
                                         state.panels.close_context_menu();
                                         ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
@@ -341,7 +343,7 @@ pub fn render(
 
                                     // Checksum (dosya için)
                                     if !entry.is_dir {
-                                        if ctx_item(ui, t, icon(t, "info"), "Checksum", None).clicked() {
+                                        if ctx_item(ui, t, icon(t, "info"), "Checksum", None).ctx_act() {
                                             state.pending_checksum_request = Some(entry.path.clone());
                                             state.panels.close_context_menu();
                                             ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
@@ -351,7 +353,7 @@ pub fn render(
                                     ctx_sep(ui, t);
 
                                     // Properties
-                                    if ctx_item(ui, t, icon(t, "info"), "Properties", None).clicked() {
+                                    if ctx_item(ui, t, icon(t, "info"), "Properties", None).ctx_act() {
                                         state.panels.open_properties(entry.path.clone());
                                         state.panels.close_context_menu();
                                         ui.ctx().data_mut(|d| d.insert_temp(other_id, false));
@@ -363,7 +365,7 @@ pub fn render(
                                     if !ctx_cmds.is_empty() {
                                         ctx_sep(ui, t);
                                         for cmd in ctx_cmds {
-                                            if ctx_item(ui, t, icon(t, &cmd.icon), &cmd.name, None).clicked() {
+                                            if ctx_item(ui, t, icon(t, &cmd.icon), &cmd.name, None).ctx_act() {
                                                 let id  = cmd.id.clone();
                                                 let sel = Some(entry.path.clone());
                                                 let dir = state.nav.current_path.clone();
@@ -404,7 +406,7 @@ pub fn render(
                         .unwrap_or(false);
 
                     if has_clipboard {
-                        if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).clicked() {
+                        if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
                             let p = state.nav.current_path.clone();
                             if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                                 let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
@@ -419,13 +421,13 @@ pub fn render(
                         ctx_item_disabled(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V"));
                     }
 
-                    if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).clicked() {
+                    if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).ctx_act() {
                         let path = unique_new_folder_path(&state.nav.current_path);
                         try_create_dir_or_elevate(state, path);
                         state.panels.close_context_menu();
                     }
 
-                    if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).clicked() {
+                    if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).ctx_act() {
                         let path = unique_new_file_path(&state.nav.current_path);
                         try_create_file_or_elevate(state, path);
                         state.panels.close_context_menu();
@@ -435,12 +437,12 @@ pub fn render(
 
                     // Open Terminal in current dir
                     let cur_path = state.nav.current_path.clone();
-                    if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).clicked() {
+                    if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).ctx_act() {
                         state.open_terminal(Some(cur_path));
                         state.panels.close_context_menu();
                     }
 
-                    if ctx_item(ui, t, icon(t, "refresh"), "Refresh", Some("F5")).clicked() {
+                    if ctx_item(ui, t, icon(t, "refresh"), "Refresh", Some("F5")).ctx_act() {
                         state.refresh();
                         state.panels.close_context_menu();
                     }

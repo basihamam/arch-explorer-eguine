@@ -37,6 +37,29 @@ fn get_folder_name(cwd: &str) -> String {
     }
 }
 
+fn is_interactive_command(cmd: &str) -> bool {
+    let first = cmd.split_whitespace().next().unwrap_or("");
+    let base = std::path::Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or(first);
+    matches!(base,
+        "cava" | "htop" | "btop" | "top" | "nvtop" |
+        "vim" | "vi" | "nvim" | "nano" | "emacs" |
+        "fzf" | "ranger" | "ncdu" | "lazygit" | "tig" |
+        "less" | "more" | "watch" | "nethogs" | "glances" | "yazi"
+    )
+}
+
+fn detect_system_terminal() -> String {
+    let terminals = ["kitty", "alacritty", "foot", "wezterm", "xterm", "xfce4-terminal", "konsole", "gnome-terminal"];
+    for t in &terminals {
+        if std::process::Command::new("which").arg(t).output()
+            .map(|o| o.status.success()).unwrap_or(false)
+        {
+            return t.to_string();
+        }
+    }
+    "xterm".to_string()
+}
+
 pub fn prompt_prefix(cwd: &str) -> String {
     let u = get_username();
     let h = get_hostname();
@@ -196,6 +219,8 @@ pub fn render(
                             .desired_width(ui.available_width().max(60.0))
                     );
 
+                    state.terminal.is_focused = edit_resp.has_focus();
+
                     // Auto-focus terminal on explicit click or when should_focus is requested
                     if state.terminal.should_focus || bg_clicked {
                         edit_resp.request_focus();
@@ -255,6 +280,34 @@ pub fn render(
                                         text: format!("bash: cd: {}: No such file or directory", target),
                                     });
                                 }
+                            } else if is_interactive_command(&raw) {
+                                let term = detect_system_terminal();
+                                let cwd_c = state.terminal.cwd.clone();
+                                let cmd_c = raw.clone();
+                                state.terminal.history.push(TerminalLine {
+                                    kind: TerminalMsgKind::Input,
+                                    text: cmd_line,
+                                });
+                                state.terminal.history.push(TerminalLine {
+                                    kind: TerminalMsgKind::Info,
+                                    text: format!("[terminal] '{}' etkileşimli bir uygulama olduğu için {} ile harici terminalde başlatıldı.", raw, term),
+                                });
+                                std::thread::spawn(move || {
+                                    let mut c = std::process::Command::new(&term);
+                                    c.current_dir(&cwd_c);
+                                    match term.as_str() {
+                                        "kitty" => {
+                                            c.args(["--title", &cmd_c, "bash", "-c", &format!("{}; echo; read -p 'Devam etmek için Enter tuşuna basın...'", cmd_c)]);
+                                        }
+                                        "alacritty" => {
+                                            c.args(["-e", "bash", "-c", &format!("{}; echo; read -p 'Devam etmek için Enter tuşuna basın...'", cmd_c)]);
+                                        }
+                                        _ => {
+                                            c.args(["-e", "bash", "-c", &format!("{}; echo; read -p 'Devam etmek için Enter tuşuna basın...'", cmd_c)]);
+                                        }
+                                    }
+                                    let _ = c.spawn();
+                                });
                             } else {
                                 let cwd = state.terminal.cwd.clone();
                                 let cmd = raw.clone();
@@ -267,10 +320,15 @@ pub fn render(
                                 });
 
                                 std::thread::spawn(move || {
-                                    let out = std::process::Command::new("bash")
-                                        .args(["-c", &cmd])
+                                    let mut child = std::process::Command::new("bash");
+                                    child.args(["-c", &cmd])
                                         .current_dir(&cwd)
-                                        .output();
+                                        .env("TERM", "xterm-256color")
+                                        .env("COLORTERM", "truecolor")
+                                        .env("LINES", "24")
+                                        .env("COLUMNS", "80")
+                                        .stdin(std::process::Stdio::null());
+                                    let out = child.output();
 
                                     let mut lines = Vec::new();
                                     match out {
