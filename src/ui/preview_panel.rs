@@ -28,8 +28,11 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState, tx: &std::sync::m
         ..Default::default()
     }
     .show(ui, |ui| {
+        ui.spacing_mut().scroll.bar_width = 8.0;
+        ui.spacing_mut().scroll.handle_min_length = 28.0;
         ui.set_max_width(ui.available_width());
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::both()
+            .id_source("preview_panel_main_scroll")
             .auto_shrink([false; 2])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
@@ -897,7 +900,9 @@ fn render_text(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
             ..Default::default()
         }
         .show(ui, |ui| {
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
+                .id_source("preview_text_scroll_inner")
+                .max_height(280.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(
@@ -1807,6 +1812,8 @@ fn render_binary(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
         }
         .show(ui, |ui| {
             egui::ScrollArea::both()
+                .id_source("preview_binary_hex_scroll")
+                .max_height(280.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(

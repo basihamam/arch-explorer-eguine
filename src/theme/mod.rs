@@ -791,7 +791,10 @@ pub mod egui_bridge {
         style.spacing.menu_margin     = Margin::same(sp.sm);
         style.spacing.indent          = sp.xl;
         style.spacing.interact_size   = Vec2::new(sp.xxl * 2.0, t.layout.item_height);
-        style.spacing.scroll.bar_width = 4.0;
+        style.spacing.scroll.bar_width = 8.0;
+        style.spacing.scroll.handle_min_length = 24.0;
+        style.spacing.scroll.bar_inner_margin = 2.0;
+        style.spacing.scroll.bar_outer_margin = 2.0;
 
         // ── Text Styles ───────────────────────────────────────────────────
         style.text_styles = {
