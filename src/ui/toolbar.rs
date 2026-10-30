@@ -58,11 +58,25 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                 d.get_temp(edit_mode_id).unwrap_or(false)
             );
 
-            let icon_area_w = t.layout.toolbar_height * 4.5; // Kalan butonlar için temiz alan
+            // ── Responsive Breakpoints ────────────────────────────────────
+            let total_avail_w = ui.available_width();
+            let show_view_modes = total_avail_w >= 620.0;
+            let show_dual_pane = total_avail_w >= 540.0;
+            let show_hidden_toggle = total_avail_w >= 460.0;
+            let show_preview = total_avail_w >= 390.0;
+            let show_search_btn = total_avail_w >= 330.0 || state.search.active;
+
+            let mut right_reserve = 10.0;
+            if show_view_modes { right_reserve += 64.0; }
+            if show_hidden_toggle { right_reserve += 32.0; }
+            if show_dual_pane { right_reserve += 32.0; }
+            if show_preview { right_reserve += 32.0; }
+            if show_search_btn && !state.search.active { right_reserve += 36.0; }
+
             let addr_width = if state.search.active {
-                (ui.available_width() * 0.5).max(80.0)
+                (total_avail_w * 0.45).clamp(80.0, 350.0)
             } else {
-                (ui.available_width() - icon_area_w).max(80.0)
+                (total_avail_w - right_reserve).max(80.0)
             };
 
             let just_entered_id = ui.id().with("addr_just_entered");
@@ -127,7 +141,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             // ── Search ────────────────────────────────────────────────────
             if state.search.active {
                 search_bar(ui, t, state);
-            } else {
+            } else if show_search_btn {
                 if nav_btn(ui, t, icon(t, "search"), true, || {}).on_hover_text("Search (Ctrl+F)").clicked() {
                     state.search.active = true;
                 }
@@ -135,55 +149,63 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // ── Preview Toggle (F3) ───────────────────────────────────
-                let preview_active = state.panels.active == crate::state::ActivePanel::Preview;
-                let preview_color = if preview_active { c.accent() } else { c.text_hint() };
-                let preview_resp = icon_btn(ui, t, icon(t, "preview"), preview_color).on_hover_text("Preview (F3)");
-                if preview_resp.clicked() {
-                    if preview_active {
-                        state.media_player.stop();
-                        state.panels.close();
-                    } else {
-                        state.panels.open_preview();
+                if show_preview {
+                    let preview_active = state.panels.active == crate::state::ActivePanel::Preview;
+                    let preview_color = if preview_active { c.accent() } else { c.text_hint() };
+                    let preview_resp = icon_btn(ui, t, icon(t, "preview"), preview_color).on_hover_text("Preview (F3)");
+                    if preview_resp.clicked() {
+                        if preview_active {
+                            state.media_player.stop();
+                            state.panels.close();
+                        } else {
+                            state.panels.open_preview();
+                        }
                     }
                 }
 
                 // ── Dual Pane Toggle (Ctrl+P) ─────────────────────────────
-                let dp_color = if state.dual_pane { c.accent() } else { c.text_hint() };
-                let dp_resp  = icon_btn(ui, t, "\u{f0db}", dp_color).on_hover_text("Dual Pane (Ctrl+P)");
-                if dp_resp.clicked() {
-                    if state.dual_pane { state.close_dual_pane(); }
-                    else               { state.open_dual_pane(); }
+                if show_dual_pane {
+                    let dp_color = if state.dual_pane { c.accent() } else { c.text_hint() };
+                    let dp_resp  = icon_btn(ui, t, "\u{f0db}", dp_color).on_hover_text("Dual Pane (Ctrl+P)");
+                    if dp_resp.clicked() {
+                        if state.dual_pane { state.close_dual_pane(); }
+                        else               { state.open_dual_pane(); }
+                    }
                 }
 
                 // ── Hidden toggle ─────────────────────────────────────────
-                let hidden_color = if state.dir.show_hidden { c.accent() } else { c.text_hint() };
-                if icon_btn(ui, t, icon(t, if state.dir.show_hidden { "visible" } else { "hidden" }), hidden_color)
-                    .on_hover_text(if state.dir.show_hidden { "Hide Hidden Files (Ctrl+H)" } else { "Show Hidden Files (Ctrl+H)" })
-                    .clicked()
-                {
-                    state.dir.show_hidden = !state.dir.show_hidden;
-                    state.refresh();
+                if show_hidden_toggle {
+                    let hidden_color = if state.dir.show_hidden { c.accent() } else { c.text_hint() };
+                    if icon_btn(ui, t, icon(t, if state.dir.show_hidden { "visible" } else { "hidden" }), hidden_color)
+                        .on_hover_text(if state.dir.show_hidden { "Hide Hidden Files (Ctrl+H)" } else { "Show Hidden Files (Ctrl+H)" })
+                        .clicked()
+                    {
+                        state.dir.show_hidden = !state.dir.show_hidden;
+                        state.refresh();
+                    }
                 }
 
-                ui.add_space(sp.sm);
+                if show_view_modes {
+                    ui.add_space(sp.sm);
 
-                // ── View Mode Toggle ──────────────────────────────────────
-                let grid_color = if state.view_mode == ViewMode::Grid {
-                    c.accent()
-                } else {
-                    c.text_hint()
-                };
-                let list_color = if state.view_mode == ViewMode::List {
-                    c.accent()
-                } else {
-                    c.text_hint()
-                };
+                    // ── View Mode Toggle ──────────────────────────────────────
+                    let grid_color = if state.view_mode == ViewMode::Grid {
+                        c.accent()
+                    } else {
+                        c.text_hint()
+                    };
+                    let list_color = if state.view_mode == ViewMode::List {
+                        c.accent()
+                    } else {
+                        c.text_hint()
+                    };
 
-                if icon_btn(ui, t, icon(t, "list"), list_color).on_hover_text("List View (Ctrl+2)").clicked() {
-                    state.set_view_mode_for_current_dir(ViewMode::List);
-                }
-                if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
-                    state.set_view_mode_for_current_dir(ViewMode::Grid);
+                    if icon_btn(ui, t, icon(t, "list"), list_color).on_hover_text("List View (Ctrl+2)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::List);
+                    }
+                    if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::Grid);
+                    }
                 }
             });
         });

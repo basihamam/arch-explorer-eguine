@@ -1145,11 +1145,13 @@ impl ArchExplorer {
                 }
             }
 
-            // Delete & Shift+Delete — Dosyaları Sil / Çöp Kutusuna Taşı
+            // Delete & Shift+Delete — Dosyaları Sil / Çöp Kutusuna Taşı / Çöp Kutusundaysa Kalıcı Sil
             if i.key_pressed(Key::Delete) && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
-                    let permanent = i.modifiers.shift;
+                    let is_in_trash = self.state.nav.current_path.starts_with("trash:")
+                        || self.state.nav.current_path.contains("/.local/share/Trash");
+                    let permanent = i.modifiers.shift || is_in_trash;
                     crate::ui::context_menu::try_delete_or_elevate(&mut self.state, paths, permanent);
                 }
             }
@@ -1268,7 +1270,11 @@ impl ArchExplorer {
         crate::ui::titlebar::render(ctx, t, &mut self.state);
 
         // ── Top TabBar (under titlebar, full window width) ───────────────
-        crate::ui::tab_bar::render_top_panel(ctx, t, &mut self.state);
+        // Tek sekme ve tek bölme durumunda kullanıcı isteğiyle gizlenir (özel tasarım tercihi)
+        let show_tab_bar = self.state.dual_pane || self.state.tabs.tabs.len() > 1;
+        if show_tab_bar {
+            crate::ui::tab_bar::render_top_panel(ctx, t, &mut self.state);
+        }
 
         // ── Ana layout: sidebar | content | preview ──────────────────────
         egui::SidePanel::left("sidebar")

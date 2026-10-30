@@ -630,6 +630,35 @@ pub fn restore_from_trash(target: &str) -> Result<String, String> {
     Err(format!("Çöp kutusunda eşleşen kayıt bulunamadı: {}", target))
 }
 
+pub fn empty_trash() -> Result<(), String> {
+    let trash_files = resolve_trash_dir();
+    if let Some(trash_parent) = trash_files.parent() {
+        let trash_info_dir = trash_parent.join("info");
+        if trash_files.exists() {
+            if let Ok(entries) = fs::read_dir(&trash_files) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let _ = fs::remove_dir_all(&p);
+                    } else {
+                        let _ = fs::remove_file(&p);
+                    }
+                }
+            }
+        }
+        if trash_info_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&trash_info_dir) {
+                for entry in entries.flatten() {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        Ok(())
+    } else {
+        Err("Trash dizini bulunamadı".to_string())
+    }
+}
+
 pub fn rename_item(old_path: String, new_path: String) -> Result<(), String> {
     if let Err(e) = fs::rename(&old_path, &new_path) {
         if get_root_password().is_some() {

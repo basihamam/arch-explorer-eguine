@@ -390,18 +390,9 @@ fn grid_item(
         visual_icon_rect
     };
 
-    let combined_min_x = top_hit_rect.min.x.min(label_pill_rect.min.x);
-    let combined_max_x = top_hit_rect.max.x.max(label_pill_rect.max.x);
-    let combined_min_y = top_hit_rect.min.y;
-    let combined_max_y = label_pill_rect.max.y;
-    let unified_hit_rect = Rect::from_min_max(
-        Pos2::new(combined_min_x, combined_min_y),
-        Pos2::new(combined_max_x, combined_max_y),
-    );
-
     let hit_area = GridHitArea {
-        thumb_hit: unified_hit_rect,
-        label_hit: unified_hit_rect,
+        thumb_hit: top_hit_rect.expand(2.0),
+        label_hit: label_pill_rect.expand(2.0),
     };
 
     // Store item rect for rubber-band and click deselect
@@ -1162,12 +1153,13 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     );
                 }
 
-                // Calculate item hit area (Icon + Name label + 5px margin, tight Nemo-style)
+                // Calculate item hit area (Icon + Name label + extended right area so clicking isn't missed)
                 let text_len = entry.name.chars().count().min(40) as f32;
                 let text_w = (text_len * 9.0).clamp(32.0, (rect.max.x - actual_name_x - right_space).max(32.0));
+                let hit_max_x = (actual_name_x + text_w + 180.0).min(rect.max.x - 12.0).max(actual_name_x + text_w + 24.0);
                 let hit_area = Rect::from_min_max(
                     Pos2::new(rect.min.x + sp.md, rect.min.y),
-                    Pos2::new((actual_name_x + text_w + 12.0).min(rect.max.x - right_space.max(0.0)), rect.max.y),
+                    Pos2::new(hit_max_x, rect.max.y),
                 );
                 current_frame_rects.push(ListHitArea {
                     row_rect: rect,
@@ -2272,24 +2264,16 @@ pub fn render_snapshot_tagged(
                                         Sense::hover(),
                                     );
                                     if ui.is_rect_visible(rect) {
-                                        let sel_bg = Color32::from_rgba_unmultiplied(
-                                            c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(),
-                                            (t.effects.card_opacity * 255.0) as u8,
-                                        );
-                                        let hover_bg = Color32::from_rgba_unmultiplied(
-                                            c.bg_surface0().r(), c.bg_surface0().g(), c.bg_surface0().b(),
-                                            (t.effects.card_opacity * 200.0) as u8,
-                                        );
-                                        let default_bg = Color32::from_rgba_unmultiplied(
-                                            c.bg_surface0().r(), c.bg_surface0().g(), c.bg_surface0().b(),
-                                            ((t.effects.card_opacity - 0.4).max(0.0) * 120.0) as u8,
-                                        );
                                         let bg = if is_sel {
-                                            sel_bg
+                                            Color32::from_rgba_unmultiplied(
+                                                c.accent().r(), c.accent().g(), c.accent().b(), 38,
+                                            )
                                         } else if resp.hovered() {
-                                            hover_bg
+                                            Color32::from_rgba_unmultiplied(
+                                                c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), 95,
+                                            )
                                         } else {
-                                            default_bg
+                                            Color32::TRANSPARENT
                                         };
 
                                         ui.painter().rect_filled(rect, Rounding::same(s.radius_md), bg);
@@ -2369,9 +2353,9 @@ pub fn render_snapshot_tagged(
                         );
                         if ui.is_rect_visible(rect) {
                             let bg = if is_sel {
-                                Color32::from_rgba_unmultiplied(c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), (t.effects.card_opacity * 255.0) as u8)
+                                Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 38)
                             } else if resp.hovered() {
-                                c.bg_surface0()
+                                Color32::from_rgba_unmultiplied(c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), 95)
                             } else {
                                 Color32::TRANSPARENT
                             };

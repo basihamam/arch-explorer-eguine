@@ -402,39 +402,75 @@ pub fn render(
 
                 } else {
                     // ── Background context menu ───────────────────────────
+                    let is_current_in_trash = state.nav.current_path.starts_with("trash:")
+                        || state.nav.current_path.contains("/.local/share/Trash");
+
+                    if is_current_in_trash {
+                        if ctx_item_colored(ui, t, icon(t, "refresh"), "Restore All Items", None, c.accent()).ctx_act() {
+                            let entries = state.dir.entries.clone();
+                            let mut restored = Vec::new();
+                            for e in entries.iter() {
+                                match crate::backend::fs_ops::restore_from_trash(&e.path) {
+                                    Ok(orig) => restored.push(orig),
+                                    Err(_) => {},
+                                }
+                            }
+                            state.refresh();
+                            if !restored.is_empty() {
+                                state.notify.success(format!("{} öğe çöp kutusundan geri yüklendi", restored.len()));
+                            }
+                            state.panels.close_context_menu();
+                        }
+                        if ctx_item_colored(ui, t, icon(t, "delete"), "Empty Trash", None, c.danger()).ctx_act() {
+                            match crate::backend::fs_ops::empty_trash() {
+                                Ok(_) => {
+                                    state.refresh();
+                                    state.notify.success("Çöp kutusu boşaltıldı".into());
+                                }
+                                Err(e) => {
+                                    state.notify.error(format!("Çöp kutusu boşaltılamadı: {}", e));
+                                }
+                            }
+                            state.panels.close_context_menu();
+                        }
+                        ctx_sep(ui, t);
+                    }
+
                     let has_clipboard = crate::backend::clipboard::clipboard_get()
                         .map(|cb| !cb.paths.is_empty())
                         .unwrap_or(false);
 
-                    if has_clipboard {
-                        if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
-                            let p = state.nav.current_path.clone();
-                            if let Some(cb) = crate::backend::clipboard::clipboard_get() {
-                                let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
-                                if !is_copy {
-                                    let _ = crate::backend::clipboard::clipboard_clear();
+                    if !is_current_in_trash {
+                        if has_clipboard {
+                            if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
+                                let p = state.nav.current_path.clone();
+                                if let Some(cb) = crate::backend::clipboard::clipboard_get() {
+                                    let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
+                                    if !is_copy {
+                                        let _ = crate::backend::clipboard::clipboard_clear();
+                                    }
+                                    state.start_transfer(cb.paths, p, is_copy);
                                 }
-                                state.start_transfer(cb.paths, p, is_copy);
+                                state.panels.close_context_menu();
                             }
+                        } else {
+                            ctx_item_disabled(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V"));
+                        }
+
+                        if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).ctx_act() {
+                            let path = unique_new_folder_path(&state.nav.current_path);
+                            try_create_dir_or_elevate(state, path);
                             state.panels.close_context_menu();
                         }
-                    } else {
-                        ctx_item_disabled(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V"));
-                    }
 
-                    if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).ctx_act() {
-                        let path = unique_new_folder_path(&state.nav.current_path);
-                        try_create_dir_or_elevate(state, path);
-                        state.panels.close_context_menu();
-                    }
+                        if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).ctx_act() {
+                            let path = unique_new_file_path(&state.nav.current_path);
+                            try_create_file_or_elevate(state, path);
+                            state.panels.close_context_menu();
+                        }
 
-                    if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).ctx_act() {
-                        let path = unique_new_file_path(&state.nav.current_path);
-                        try_create_file_or_elevate(state, path);
-                        state.panels.close_context_menu();
+                        ctx_sep(ui, t);
                     }
-
-                    ctx_sep(ui, t);
 
                     // Open Terminal in current dir
                     let cur_path = state.nav.current_path.clone();

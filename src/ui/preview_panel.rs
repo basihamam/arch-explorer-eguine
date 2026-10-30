@@ -892,6 +892,7 @@ fn render_text(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
             c.bg_crust()
         };
         let max_w = (ui.available_width() - sp.sm * 2.0).max(40.0);
+        let avail_h = (ui.available_height() - sp.sm).max(280.0);
         egui::Frame {
             fill: box_fill,
             rounding: Rounding::same(t.shape.radius_sm),
@@ -902,7 +903,7 @@ fn render_text(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
         .show(ui, |ui| {
             egui::ScrollArea::both()
                 .id_source("preview_text_scroll_inner")
-                .max_height(280.0)
+                .max_height(avail_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(
@@ -1803,6 +1804,7 @@ fn render_binary(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
         } else {
             c.bg_crust()
         };
+        let avail_h = (ui.available_height() - sp.sm).max(280.0);
         egui::Frame {
             fill: box_fill,
             rounding: Rounding::same(t.shape.radius_sm),
@@ -1813,7 +1815,7 @@ fn render_binary(ui: &mut Ui, t: &AexTheme, preview: &FilePreview) {
         .show(ui, |ui| {
             egui::ScrollArea::both()
                 .id_source("preview_binary_hex_scroll")
-                .max_height(280.0)
+                .max_height(avail_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add(

@@ -196,7 +196,9 @@ fn action_btn(ui: &mut Ui, t: &AexTheme, icon_str: &str, label: &str, is_active:
         c.text_secondary()
     };
 
-    let btn_w = 78.0_f32;
+    let font_id = FontId::new(t.typography.size_xs, FontFamily::Proportional);
+    let text_w = ui.painter().layout_no_wrap(label.to_string(), font_id.clone(), color).size().x;
+    let btn_w = (text_w + 32.0).max(76.0);
     let btn_h = 24.0_f32;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(btn_w, btn_h), Sense::click());
 
@@ -212,8 +214,8 @@ fn action_btn(ui: &mut Ui, t: &AexTheme, icon_str: &str, label: &str, is_active:
         ui.painter().rect_filled(rect, Rounding::same(s.radius_sm), bg);
 
         let cy = rect.center().y;
-        let icon_x = rect.min.x + 10.0;
-        let text_x = rect.min.x + 24.0;
+        let icon_x = rect.min.x + 11.0;
+        let text_x = rect.min.x + 23.0;
 
         ui.painter().text(
             Pos2::new(icon_x, cy),
@@ -226,7 +228,7 @@ fn action_btn(ui: &mut Ui, t: &AexTheme, icon_str: &str, label: &str, is_active:
             Pos2::new(text_x, cy),
             Align2::LEFT_CENTER,
             label,
-            FontId::new(t.typography.size_xs, FontFamily::Proportional),
+            font_id,
             color,
         );
     }
