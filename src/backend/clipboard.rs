@@ -570,21 +570,8 @@ fn undo_single_action(action: &UndoAction, restored: &mut Vec<String>) -> Result
                     restored.push(restored_path.clone());
                     format!("Silme geri alındı: {} çöp kutusundan geri yüklendi", restored_path)
                 }
-                Err(_) => {
-                    let restore = std::process::Command::new("trash-restore")
-                        .stdin(std::process::Stdio::null())
-                        .output();
-
-                    match restore {
-                        Ok(_) => {
-                            restored.push(path.clone());
-                            format!("Silme geri alındı (trash-restore) — {} kontrol et", path)
-                        }
-                        Err(_) => format!(
-                            "Silme geri alınamadı — trash-restore kurulu değil. Dosya: {}",
-                            path
-                        ),
-                    }
+                Err(e) => {
+                    return Err(format!("Silme geri alınamadı: {}", e));
                 }
             }
         }

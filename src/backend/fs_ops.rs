@@ -606,51 +606,104 @@ pub fn restore_from_trash(target: &str) -> Result<String, String> {
     let trash_parent = trash_files.parent().ok_or_else(|| "Trash parent bulunamadı".to_string())?;
     let trash_info_dir = trash_parent.join("info");
 
-    let p = Path::new(target);
-    // Case 1: Target is an item inside trash (e.g. ~/.local/share/Trash/files/abc or trash:///abc)
-    if target.starts_with("trash:") || p.starts_with(&trash_files) {
-        let file_name = p.file_name().ok_or_else(|| "Geçersiz dosya adı".to_string())?;
-        let info_file = trash_info_dir.join(format!("{}.trashinfo", file_name.to_string_lossy()));
-        if !info_file.exists() {
-            return Err("Dosyanın .trashinfo meta verisi bulunamadı".to_string());
+    let target_decoded = percent_decode(target);
+    let p = Path::new(&target_decoded);
+
+    // Normalize path if it's a trash: URI
+    let clean_str = if let Some(s) = target_decoded.strip_prefix("trash:///") {
+        s
+    } else if let Some(s) = target_decoded.strip_prefix("trash://") {
+        s
+    } else if let Some(s) = target_decoded.strip_prefix("trash:") {
+        s
+    } else {
+        target_decoded.as_str()
+    };
+    let clean_path = Path::new(clean_str);
+
+    // Geri taşıma helper'ı — yetki yetersizse sudo/pkexec fallback'i ile taşır
+    let move_back = |src: &Path, dst: &Path| -> Result<(), String> {
+        if let Some(parent) = dst.parent() {
+            let _ = fs::create_dir_all(parent);
         }
-        let content = fs::read_to_string(&info_file).map_err(|e| e.to_string())?;
-        for line in content.lines() {
-            if let Some(raw_path) = line.strip_prefix("Path=") {
-                let orig_path = percent_decode(raw_path.trim());
-                let orig_p = Path::new(&orig_path);
-                if let Some(parent) = orig_p.parent() {
-                    let _ = fs::create_dir_all(parent);
+        if let Err(e) = crate::backend::clipboard::move_item_inner(src, dst) {
+            let err_lower = e.to_string().to_lowercase();
+            if err_lower.contains("permission denied")
+                || err_lower.contains("access denied")
+                || err_lower.contains("işlem engellendi")
+                || err_lower.contains("operation not permitted")
+            {
+                let cmd = format!("mv {:?} {:?}", src.to_string_lossy(), dst.to_string_lossy());
+                let ok = if crate::backend::fs_ops::get_root_password().is_some() {
+                    crate::backend::fs_ops::sudo_run_elevated("bash", &["-c", &cmd]).is_ok()
+                } else {
+                    std::process::Command::new("pkexec")
+                        .args(["bash", "-c", &cmd])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                };
+                if !ok {
+                    return Err(format!("Geri yükleme için yetki sağlanamadı: {}", e));
                 }
-                let trash_file = trash_files.join(file_name);
-                crate::backend::clipboard::move_item_inner(&trash_file, &orig_p).map_err(|e| format!("Geri yükleme taşınamadı: {}", e))?;
-                let _ = fs::remove_file(info_file);
-                return Ok(orig_path);
+            } else {
+                return Err(format!("Geri yükleme taşınamadı: {}", e));
             }
         }
-        return Err("Geçerli Path satırı bulunamadı".to_string());
-    }
+        Ok(())
+    };
 
-    // Case 2: Target is the original path that was deleted (e.g. from Undo)
-    if trash_info_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&trash_info_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        for line in content.lines() {
-                            if let Some(raw_path) = line.strip_prefix("Path=") {
-                                let orig_path = percent_decode(raw_path.trim());
-                                if orig_path == target {
-                                    let stem = path.file_stem().unwrap_or_default();
-                                    let trash_file = trash_files.join(stem);
-                                    if trash_file.exists() {
-                                        let orig_p = Path::new(&orig_path);
-                                        if let Some(parent) = orig_p.parent() {
-                                            let _ = fs::create_dir_all(parent);
-                                        }
-                                        crate::backend::clipboard::move_item_inner(&trash_file, orig_p).map_err(|e| format!("Geri yükleme taşınamadı: {}", e))?;
-                                        let _ = fs::remove_file(&path);
+    // Case 1: Hedef çöp kutusunun içindeki bir öğe (ör. Trash görünümünden geri yükleme)
+    let is_in_trash_files = clean_path.starts_with(&trash_files)
+        || p.starts_with(&trash_files)
+        || target.starts_with("trash:")
+        || (!clean_path.is_absolute() && trash_files.join(clean_path).exists());
+
+    if is_in_trash_files {
+        let file_name = clean_path.file_name()
+            .or_else(|| p.file_name())
+            .ok_or_else(|| "Geçersiz dosya adı".to_string())?
+            .to_string_lossy()
+            .to_string();
+
+        let trash_file = if clean_path.is_absolute() && clean_path.exists() {
+            clean_path.to_path_buf()
+        } else {
+            trash_files.join(&file_name)
+        };
+
+        let info_file = trash_info_dir.join(format!("{}.trashinfo", file_name));
+
+        // 1. Doğrudan dosya adı ile eşleşen .trashinfo varsa oku
+        if info_file.exists() {
+            if let Ok(content) = fs::read_to_string(&info_file) {
+                for line in content.lines() {
+                    if let Some(raw_path) = line.strip_prefix("Path=") {
+                        let orig_path = percent_decode(raw_path.trim());
+                        let orig_p = PathBuf::from(&orig_path);
+                        move_back(&trash_file, &orig_p)?;
+                        let _ = fs::remove_file(&info_file);
+                        return Ok(orig_path);
+                    }
+                }
+            }
+        }
+
+        // 2. Info dizinini tara (.trashinfo adı uzantı farkı içeriyorsa)
+        if trash_info_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&trash_info_dir) {
+                for entry in entries.flatten() {
+                    let ipath = entry.path();
+                    if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
+                        let stem = ipath.file_stem().unwrap_or_default().to_string_lossy();
+                        if stem == file_name {
+                            if let Ok(content) = fs::read_to_string(&ipath) {
+                                for line in content.lines() {
+                                    if let Some(raw_path) = line.strip_prefix("Path=") {
+                                        let orig_path = percent_decode(raw_path.trim());
+                                        let orig_p = PathBuf::from(&orig_path);
+                                        move_back(&trash_file, &orig_p)?;
+                                        let _ = fs::remove_file(&ipath);
                                         return Ok(orig_path);
                                     }
                                 }
@@ -660,6 +713,79 @@ pub fn restore_from_trash(target: &str) -> Result<String, String> {
                 }
             }
         }
+
+        // 3. Fallback: Eğer dosyanın herhangi bir .trashinfo kaydı yoksa veya silinmişse,
+        // kullanıcı dosyayı kaybetmesin diye ev dizinine (~) geri taşı
+        if trash_file.exists() {
+            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/aiuser"));
+            let final_target = crate::backend::clipboard::resolve_conflict(&home_dir, &file_name);
+            move_back(&trash_file, &final_target)?;
+            return Ok(final_target.to_string_lossy().to_string());
+        }
+
+        return Err(format!("Çöp kutusunda '{}' dosyası bulunamadı", file_name));
+    }
+
+    // Case 2: Hedef silinen orijinal konum (ör. Ctrl+Z / Undo işlemi)
+    let target_norm = target_decoded.trim_end_matches('/');
+    let target_p = Path::new(target_norm);
+    let target_fname = target_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let target_canon_parent = target_p.parent().and_then(|pr| fs::canonicalize(pr).ok());
+
+    let mut matches: Vec<(String, PathBuf, PathBuf, String)> = Vec::new(); // (date, trashinfo_path, trash_file, orig_path)
+
+    if trash_info_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&trash_info_dir) {
+            for entry in entries.flatten() {
+                let ipath = entry.path();
+                if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
+                    if let Ok(content) = fs::read_to_string(&ipath) {
+                        let mut item_path = String::new();
+                        let mut del_date = String::new();
+                        for line in content.lines() {
+                            if let Some(raw_path) = line.strip_prefix("Path=") {
+                                item_path = percent_decode(raw_path.trim()).trim_end_matches('/').to_string();
+                            } else if let Some(raw_date) = line.strip_prefix("DeletionDate=") {
+                                del_date = raw_date.trim().to_string();
+                            }
+                        }
+
+                        let ip_p = Path::new(&item_path);
+                        let ip_fname = ip_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        let is_match = if item_path == target_norm || item_path == target {
+                            true
+                        } else if ip_fname == target_fname {
+                            // Canonical parent karşılaştırması (symlink çözümü)
+                            if let (Some(ref tcp), Some(ip_parent)) = (&target_canon_parent, ip_p.parent()) {
+                                fs::canonicalize(ip_parent).map(|icp| &icp == tcp).unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if is_match {
+                            let stem = ipath.file_stem().unwrap_or_default();
+                            let tfile = trash_files.join(stem);
+                            if tfile.exists() {
+                                matches.push((del_date, ipath, tfile, item_path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // En son silinen en başta olacak şekilde DeletionDate azalan sırala
+    matches.sort_by(|a, b| b.0.cmp(&a.0));
+
+    if let Some((_, info_path, trash_file, orig_path)) = matches.into_iter().next() {
+        let orig_p = PathBuf::from(&orig_path);
+        move_back(&trash_file, &orig_p)?;
+        let _ = fs::remove_file(&info_path);
+        return Ok(orig_path);
     }
 
     Err(format!("Çöp kutusunda eşleşen kayıt bulunamadı: {}", target))
@@ -1206,6 +1332,84 @@ mod tests {
 
             let _ = fs::remove_file(orig_file);
         }
+    }
+
+    #[test]
+    fn test_delete_and_restore_real_flow() {
+        let test_file = "/home/aiuser/test_real_delete_flow.txt";
+        let _ = fs::write(test_file, "delete flow test content");
+        assert!(Path::new(test_file).exists());
+
+        let res = delete_item(test_file.to_string(), false);
+        assert!(res.is_ok(), "delete_item failed: {:?}", res.err());
+        assert!(!Path::new(test_file).exists());
+
+        // Now test restore_from_trash using original path (Undo path)
+        let restore_res = restore_from_trash(test_file);
+        println!("Restore result: {:?}", restore_res);
+        assert!(restore_res.is_ok(), "restore_from_trash failed: {:?}", restore_res.err());
+        assert!(Path::new(test_file).exists());
+        let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_delete_and_restore_via_symlink() {
+        let real_dir = "/home/aiuser/test_real_symlink_dir";
+        let sym_dir = "/home/aiuser/test_symlink_dir";
+        let _ = fs::create_dir_all(real_dir);
+        let _ = fs::remove_file(sym_dir);
+        let _ = std::os::unix::fs::symlink(real_dir, sym_dir);
+
+        let real_file = format!("{}/file.txt", real_dir);
+        let sym_file = format!("{}/file.txt", sym_dir);
+        let _ = fs::write(&real_file, "symlink test");
+
+        let res = delete_item(sym_file.clone(), false);
+        assert!(res.is_ok(), "delete_item via symlink failed: {:?}", res.err());
+        assert!(!Path::new(&real_file).exists());
+
+        // Restore using sym_file (the path recorded by undo!)
+        let restore_res = restore_from_trash(&sym_file);
+        assert!(restore_res.is_ok(), "restore_from_trash via symlink failed: {:?}", restore_res.err());
+        assert!(Path::new(&real_file).exists());
+
+        let _ = fs::remove_file(&real_file);
+        let _ = fs::remove_dir_all(real_dir);
+        let _ = fs::remove_file(sym_dir);
+    }
+
+    #[test]
+    fn test_batch_delete_and_undo() {
+        let dir = "/home/aiuser/test_batch_del_undo_dir";
+        let _ = fs::create_dir_all(dir);
+        let f1 = format!("{}/f1.txt", dir);
+        let f2 = format!("{}/f2.txt", dir);
+        let f3 = format!("{}/f3.txt", dir);
+        let _ = fs::write(&f1, "1");
+        let _ = fs::write(&f2, "2");
+        let _ = fs::write(&f3, "3");
+
+        let mut undos = Vec::new();
+        for f in [&f1, &f2, &f3] {
+            assert!(delete_item(f.to_string(), false).is_ok());
+            undos.push(crate::backend::clipboard::UndoAction::Delete {
+                path: f.to_string(),
+                was_dir: false,
+            });
+        }
+        assert!(!Path::new(&f1).exists());
+        assert!(!Path::new(&f2).exists());
+        assert!(!Path::new(&f3).exists());
+
+        crate::backend::clipboard::push_undo_batch(undos).unwrap();
+
+        let undo_res = crate::backend::clipboard::undo_last();
+        assert!(undo_res.is_ok(), "Batch undo failed: {:?}", undo_res.err());
+        assert!(Path::new(&f1).exists());
+        assert!(Path::new(&f2).exists());
+        assert!(Path::new(&f3).exists());
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
 

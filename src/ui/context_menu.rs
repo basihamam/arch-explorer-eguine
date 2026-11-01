@@ -973,10 +973,12 @@ pub(crate) fn try_delete_or_elevate(state: &mut AppState, paths: Vec<String>, pe
         } else {
             // Silinen öğeyi hemen seçimden ve önizlemeden kaldır
             state.selection.deselect(p);
-            deleted_undos.push(crate::backend::clipboard::UndoAction::Delete {
-                path: p.clone(),
-                was_dir: is_dir,
-            });
+            if !permanent {
+                deleted_undos.push(crate::backend::clipboard::UndoAction::Delete {
+                    path: p.clone(),
+                    was_dir: is_dir,
+                });
+            }
         }
     }
 
@@ -1003,12 +1005,14 @@ pub(crate) fn try_delete_or_elevate(state: &mut AppState, paths: Vec<String>, pe
                 let was_dir = p.is_dir();
                 if let Some(fname) = p.file_name() {
                     let base_name = fname.to_string_lossy().to_string();
-                    let info_file = trash_info_dir.join(format!("{}.trashinfo", base_name));
+                    let target_in_trash = crate::backend::clipboard::resolve_conflict(&trash_dir, &base_name);
+                    let final_name = target_in_trash.file_name().unwrap_or(fname).to_string_lossy().to_string();
+
+                    let info_file = trash_info_dir.join(format!("{}.trashinfo", final_name));
                     let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
                     let info_content = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", item_path, now);
                     let _ = std::fs::write(&info_file, info_content);
 
-                    let target_in_trash = trash_dir.join(&base_name);
                     root_mv_undos.push(crate::backend::clipboard::UndoAction::Delete {
                         path: item_path.clone(),
                         was_dir,
@@ -1017,36 +1021,41 @@ pub(crate) fn try_delete_or_elevate(state: &mut AppState, paths: Vec<String>, pe
                     let src_s = item_path.clone();
                     let dst_s = target_in_trash.to_string_lossy().to_string();
                     script_lines.push(format!("mv {:?} {:?}", src_s, dst_s));
+                    script_lines.push(format!("chown -R $(id -u):$(id -g) {:?}", dst_s));
                     state.selection.deselect(item_path);
                 }
             }
 
             if !script_lines.is_empty() {
                 let full_cmd = script_lines.join(" && ");
-                if let Some(_pwd) = crate::backend::fs_ops::get_root_password() {
-                    let _ = crate::backend::fs_ops::sudo_run_elevated("bash", &["-c", &full_cmd]);
+                let elevated_ok = if let Some(_pwd) = crate::backend::fs_ops::get_root_password() {
+                    crate::backend::fs_ops::sudo_run_elevated("bash", &["-c", &full_cmd]).is_ok()
                 } else {
                     let status = std::process::Command::new("pkexec")
                         .args(["bash", "-c", &full_cmd])
                         .status();
-                    if !status.map(|s| s.success()).unwrap_or(false) {
-                        state.pending_root_auth = Some(crate::state::RootAuthRequest {
-                            title: format!("{} öğeyi çöp kutusuna taşımak için Root yetkisi gerekiyor", need_root.len()),
-                            cmd: "bash".to_string(),
-                            args: vec!["-c".to_string(), full_cmd],
-                            reload: true,
-                            auth_type: None,
-                        });
-                        state.pending_root_wrong = false;
+                    status.map(|s| s.success()).unwrap_or(false)
+                };
+
+                if elevated_ok {
+                    if !root_mv_undos.is_empty() {
+                        let _ = crate::backend::clipboard::push_undo_batch(root_mv_undos);
                     }
+                    state.notify.success(format!("{} öğe çöp kutusuna taşındı (Root)", need_root.len()));
+                    state.refresh();
+                    return;
+                } else {
+                    state.pending_root_auth = Some(crate::state::RootAuthRequest {
+                        title: format!("{} öğeyi çöp kutusuna taşımak için Root yetkisi gerekiyor", need_root.len()),
+                        cmd: "bash".to_string(),
+                        args: vec!["-c".to_string(), full_cmd],
+                        reload: true,
+                        auth_type: None,
+                    });
+                    state.pending_root_wrong = false;
+                    return;
                 }
             }
-
-            if !root_mv_undos.is_empty() {
-                let _ = crate::backend::clipboard::push_undo_batch(root_mv_undos);
-            }
-            state.notify.success(format!("{} öğe çöp kutusuna taşındı (Root)", need_root.len()));
-            state.refresh();
             return;
         }
 
