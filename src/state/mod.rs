@@ -743,6 +743,16 @@ impl SelectionState {
         self.last_clicked = Some(to.to_string());
     }
 
+    pub fn deselect(&mut self, path: &str) {
+        self.selected.remove(path);
+        if self.last_clicked.as_deref() == Some(path) {
+            self.last_clicked = None;
+        }
+        if self.anchor.as_deref() == Some(path) {
+            self.anchor = None;
+        }
+    }
+
     pub fn clear(&mut self) {
         self.selected.clear();
         self.ranges.clear();
@@ -1619,6 +1629,7 @@ impl AppState {
             tab.selection   = self.selection.selected.clone();
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
+            tab.view_mode   = Some(self.view_mode.clone());
             tab.update_label();
         }
 
@@ -1635,6 +1646,20 @@ impl AppState {
             self.selection.selected = tab.selection.clone();
             self.search.query     = tab.search_query.clone();
             self.search.active    = !tab.search_query.is_empty();
+
+            if let Some(ref vm) = tab.view_mode {
+                self.view_mode = vm.clone();
+            } else {
+                let path_clean = tab.path.trim_end_matches('/');
+                let key = if path_clean.is_empty() { "/" } else { path_clean };
+                if let Some(saved_mode) = self.dir_view_modes.get(key) {
+                    match saved_mode.as_str() {
+                        "list" => self.view_mode = ViewMode::List,
+                        "grid" => self.view_mode = ViewMode::Grid,
+                        _ => {}
+                    }
+                }
+            }
 
             if let Some(ref cached) = tab.entries {
                 self.dir.entries = cached.clone();
@@ -1659,6 +1684,7 @@ impl AppState {
             tab.selection   = self.selection.selected.clone();
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
+            tab.view_mode   = Some(self.view_mode.clone());
             tab.update_label();
         }
 
@@ -1676,6 +1702,16 @@ impl AppState {
             self.selection.selected = tab.selection.clone();
             self.search.query     = tab.search_query.clone();
             self.search.active    = !tab.search_query.is_empty();
+
+            let path_clean = tab.path.trim_end_matches('/');
+            let key = if path_clean.is_empty() { "/" } else { path_clean };
+            if let Some(saved_mode) = self.dir_view_modes.get(key) {
+                match saved_mode.as_str() {
+                    "list" => self.view_mode = ViewMode::List,
+                    "grid" => self.view_mode = ViewMode::Grid,
+                    _ => {}
+                }
+            }
         }
 
         self.needs_reload = true;
@@ -1763,6 +1799,14 @@ impl AppState {
             }
 
             self.dir.load_listing(listing);
+
+            // Mevcut dizinde artık var olmayan dosyaları seçimden ve panellerden temizle
+            let current_existing_paths: std::collections::HashSet<String> = self.dir.entries.iter().map(|e| e.path.clone()).collect();
+            self.selection.selected.retain(|p| current_existing_paths.contains(p));
+
+            // Eğer önizleme önbelleğinde silinen dosyalar varsa temizle
+            self.preview_cache.retain(|p, _| std::path::Path::new(p).exists());
+
             if let Some(pending) = self.pending_select_paths.take() {
                 self.selection.select_many(&pending);
             }
@@ -2362,6 +2406,7 @@ pub struct TabEntry {
     pub search_query: String,
     pub label:       String,  // klasör adı
     pub entries:     Option<std::sync::Arc<Vec<FileEntry>>>,
+    pub view_mode:   Option<ViewMode>,
 }
 
 impl TabEntry {
@@ -2371,7 +2416,7 @@ impl TabEntry {
             .unwrap_or_else(|| path.clone());
         let mut history = VecDeque::new();
         history.push_back(path.clone());
-        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None }
+        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None, view_mode: None }
     }
 
     pub fn update_label(&mut self) {

@@ -1265,13 +1265,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     std::collections::HashSet::new()
                 };
 
-                for (idx, entry) in rendered_entries.iter().enumerate() {
-                    let actual_idx = start_idx + idx;
-                    let row_rect = Rect::from_min_size(
-                        Pos2::new(bg_rect.min.x, content_top_y + (actual_idx as f32 * row_h)),
-                        Vec2::new(bg_rect.width(), row_h),
-                    );
-                    if rb_rect.intersects(row_rect) {
+                for (item, entry) in current_frame_rects.iter().zip(rendered_entries.iter()) {
+                    if rb_rect.intersects(item.row_rect) {
                         next_sel.insert(entry.path.clone());
                     }
                 }

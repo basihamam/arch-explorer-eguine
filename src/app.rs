@@ -827,6 +827,10 @@ impl ArchExplorer {
                 BackendMsg::TransferDone { success, message, target_dir, selected_paths } => {
                     self.state.notify.finish_progress("file_transfer", message, success);
                     if success {
+                        // Taşınan/kesilen veya kopyalanan dosyaların eski seçim izlerini temizle
+                        let cur_existing: std::collections::HashSet<String> = self.state.dir.entries.iter().map(|e| e.path.clone()).collect();
+                        self.state.selection.selected.retain(|p| cur_existing.contains(p));
+
                         let cur = self.state.nav.current_path.trim_end_matches('/');
                         let tgt = target_dir.trim_end_matches('/');
                         if cur == tgt && !selected_paths.is_empty() {

@@ -971,6 +971,8 @@ pub(crate) fn try_delete_or_elevate(state: &mut AppState, paths: Vec<String>, pe
                 break;
             }
         } else {
+            // Silinen öğeyi hemen seçimden ve önizlemeden kaldır
+            state.selection.deselect(p);
             deleted_undos.push(crate::backend::clipboard::UndoAction::Delete {
                 path: p.clone(),
                 was_dir: is_dir,
@@ -983,9 +985,60 @@ pub(crate) fn try_delete_or_elevate(state: &mut AppState, paths: Vec<String>, pe
     }
 
     if !need_root.is_empty() {
+        // Eğer kalıcı silme değilse (Del tuşu / Çöp Kutusuna Gönder), rm -rf çalıştırma!
+        // Freedesktop trash standartlarına göre ~/.local/share/Trash altına taşı ve .trashinfo oluştur!
+        if !permanent {
+            let trash_dir = crate::backend::fs_ops::resolve_trash_dir();
+            let trash_info_dir = trash_dir.parent().map(|p| p.join("info")).unwrap_or_else(|| {
+                dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/aiuser/.local/share")).join("Trash/info")
+            });
+            let _ = std::fs::create_dir_all(&trash_dir);
+            let _ = std::fs::create_dir_all(&trash_info_dir);
+
+            let mut root_mv_undos = Vec::new();
+            for item_path in &need_root {
+                let p = std::path::Path::new(item_path);
+                let was_dir = p.is_dir();
+                if let Some(fname) = p.file_name() {
+                    let base_name = fname.to_string_lossy().to_string();
+                    let info_file = trash_info_dir.join(format!("{}.trashinfo", base_name));
+                    let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                    let info_content = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", item_path, now);
+                    let _ = std::fs::write(&info_file, info_content);
+
+                    let target_in_trash = trash_dir.join(&base_name);
+                    root_mv_undos.push(crate::backend::clipboard::UndoAction::Delete {
+                        path: item_path.clone(),
+                        was_dir,
+                    });
+
+                    // Root ile mv komutu çalıştır
+                    let src_s = item_path.clone();
+                    let dst_s = target_in_trash.to_string_lossy().to_string();
+                    let args = vec![src_s, dst_s];
+                    if let Some(_pwd) = crate::backend::fs_ops::get_root_password() {
+                        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        let _ = crate::backend::fs_ops::sudo_run_elevated("mv", &str_args);
+                    } else {
+                        let _ = std::process::Command::new("pkexec")
+                            .arg("mv")
+                            .args(&args)
+                            .status();
+                    }
+                    state.selection.deselect(item_path);
+                }
+            }
+            if !root_mv_undos.is_empty() {
+                let _ = crate::backend::clipboard::push_undo_batch(root_mv_undos);
+            }
+            state.notify.success(format!("{} öğe çöp kutusuna taşındı (Root)", need_root.len()));
+            state.refresh();
+            return;
+        }
+
         let mut args = vec!["-rf".to_string()];
         args.extend(need_root);
-        let title = if permanent { "Kalıcı Olarak Sil (Root)" } else { "Dosyaları Sil (Root)" };
+        let title = "Kalıcı Olarak Sil (Root)";
 
         // 1. Try cached root password first
         if crate::backend::fs_ops::get_root_password().is_some() {

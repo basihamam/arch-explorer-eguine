@@ -543,7 +543,42 @@ pub fn delete_item(path: String, permanent: bool) -> Result<(), String> {
         Ok(())
     } else {
         let _ = resolve_trash_dir();
-        trash::delete(&path).map_err(|e| e.to_string())
+        // 1. Standart trash kütüphanesini dene
+        if let Ok(()) = trash::delete(&path) {
+            return Ok(());
+        }
+
+        // 2. gio trash fallback
+        if let Ok(status) = Command::new("gio").args(["trash", &path]).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        // 3. Manuel freedesktop Trash spesifikasyonuna uygun taşıma + .trashinfo oluşturma
+        let file_name = p.file_name().ok_or_else(|| "Geçersiz dosya adı".to_string())?;
+        let base_name = file_name.to_string_lossy().to_string();
+        let target_in_trash = trash_files.join(&base_name);
+
+        if let Some(trash_parent) = trash_files.parent() {
+            let trash_info_dir = trash_parent.join("info");
+            let _ = fs::create_dir_all(&trash_info_dir);
+            let info_file = trash_info_dir.join(format!("{}.trashinfo", base_name));
+
+            // .trashinfo oluştur
+            let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+            let trash_info_content = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", path, now);
+            fs::write(&info_file, trash_info_content).map_err(|e| e.to_string())?;
+
+            // Dosyayı trash/files altına taşı
+            if let Err(e) = crate::backend::clipboard::move_item_inner(&p, &target_in_trash) {
+                let _ = fs::remove_file(info_file);
+                return Err(format!("Çöp kutusuna taşınamadı: {}", e));
+            }
+            Ok(())
+        } else {
+            Err("Çöp kutusu dizini bulunamadı".to_string())
+        }
     }
 }
 
