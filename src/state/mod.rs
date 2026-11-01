@@ -156,7 +156,7 @@ pub fn save_root_settings_to_disk(cfg: &RootSettings) {
 // ── List View Columns Settings ────────────────────────────────────────────────
 
 fn default_col_order() -> Vec<String> {
-    vec!["size".to_string(), "perm".to_string(), "modified".to_string()]
+    vec!["type".to_string(), "size".to_string(), "perm".to_string(), "modified".to_string()]
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -164,9 +164,31 @@ pub struct ListViewColumns {
     pub size_w: f32,
     pub perm_w: f32,
     pub modified_w: f32,
+    #[serde(default = "default_type_w")]
+    pub type_w: f32,
+    #[serde(default = "default_accessed_w")]
+    pub accessed_w: f32,
+    #[serde(default = "default_show_type")]
+    pub show_type: bool,
+    #[serde(default = "default_show_size")]
+    pub show_size: bool,
+    #[serde(default = "default_show_perm")]
+    pub show_perm: bool,
+    #[serde(default = "default_show_modified")]
+    pub show_modified: bool,
+    #[serde(default = "default_show_accessed")]
+    pub show_accessed: bool,
     #[serde(default = "default_col_order")]
     pub order: Vec<String>,
 }
+
+fn default_type_w() -> f32 { 90.0 }
+fn default_accessed_w() -> f32 { 140.0 }
+fn default_show_type() -> bool { true }
+fn default_show_size() -> bool { true }
+fn default_show_perm() -> bool { true }
+fn default_show_modified() -> bool { true }
+fn default_show_accessed() -> bool { false }
 
 impl Default for ListViewColumns {
     fn default() -> Self {
@@ -174,6 +196,13 @@ impl Default for ListViewColumns {
             size_w: 120.0,
             perm_w: 110.0,
             modified_w: 150.0,
+            type_w: 90.0,
+            accessed_w: 140.0,
+            show_type: true,
+            show_size: true,
+            show_perm: true,
+            show_modified: true,
+            show_accessed: false,
             order: default_col_order(),
         }
     }

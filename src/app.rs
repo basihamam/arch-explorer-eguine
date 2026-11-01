@@ -1294,7 +1294,7 @@ impl ArchExplorer {
         }
 
         // ── Ana layout: sidebar | content | preview ──────────────────────
-        egui::SidePanel::left("sidebar")
+        let sidebar_resp = egui::SidePanel::left("sidebar")
             .width_range(120.0..=300.0)
             .default_width(t.layout.sidebar_width)
             .resizable(true)
@@ -1302,6 +1302,13 @@ impl ArchExplorer {
             .show(ctx, |ui| {
                 crate::ui::sidebar::render(ui, t, &mut self.state, &self.tx, &self.runtime);
             });
+
+        // Sidebar resizer kontrolü (şeffaf çoklu seçimi engellemek için)
+        let sidebar_rect = sidebar_resp.response.rect;
+        let is_primary_down = ctx.input(|i| i.pointer.primary_down());
+        let press_origin = ctx.input(|i| i.pointer.press_origin());
+        let sidebar_is_resizing = is_primary_down && press_origin.map(|p| (p.x - sidebar_rect.right()).abs() < 16.0).unwrap_or(false);
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("is_resizing_sidebar"), sidebar_is_resizing));
 
         // ── Preview Auto Open / Close based on preview_mode ──────────────
         // Çoklu seçim veya rubber-band şeffaf seçim önizleme panelini KESİNLİKLE kapatmaz!

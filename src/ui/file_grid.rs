@@ -144,6 +144,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let pressed_on_item = press_origin.map(|origin| prev_rects.iter().any(|hit| hit.contains(origin))).unwrap_or(false);
 
             let is_resizing_preview: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_preview")).unwrap_or(false));
+            let is_resizing_sidebar: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_sidebar")).unwrap_or(false));
             let is_resizing_column: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_column")).unwrap_or(false));
             let is_preview_open = state.panels.active == ActivePanel::Preview;
             let scroll_bar_w = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin + ui.spacing().scroll.bar_outer_margin).max(18.0) + 10.0;
@@ -158,10 +159,10 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
             let shift = ui.input(|i| i.modifiers.shift);
 
-            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column && !ctrl && !shift {
+            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column && !ctrl && !shift {
                 state.selection.clear();
             }
-            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
+            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
                 if let Some(pos) = ptr_pos {
                     state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
                 }
@@ -171,8 +172,8 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let rb_rel_y_id = Id::new(format!("rubber_band_rel_y_grid_{}", pane_tag));
             let rb_init_sel_id = Id::new(format!("rubber_band_init_sel_grid_{}", pane_tag));
 
-            // Only start rubber-band if press was NOT on any file item, NOT on preview resize handle, NOT on scrollbars/column resizer, and NOT dragging files
-            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
+            // Only start rubber-band if press was NOT on any file item, NOT on preview/sidebar resize handle, NOT on scrollbars/column resizer, and NOT dragging files
+            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
                 if let (Some(origin), Some(cur_pos)) = (press_origin, ptr_pos) {
                     if safe_bg_rect.contains(origin) {
                         let drag_delta = cur_pos - origin;
@@ -373,11 +374,11 @@ fn grid_item(
     let name_font  = (item_w * 0.115).clamp(9.5, 13.5);
     let badge_font = (item_w * 0.085).clamp(8.0, 11.0);
 
-    let max_chars = ((item_w - 10.0) / (name_font * 0.60)).max(6.0) as usize;
+    let max_chars = ((item_w - 4.0) / (name_font * 0.48)).max(10.0) as usize;
     let name_text = truncate_name(&entry.name, max_chars);
 
     // Measure label width so label pill tightly hugs the file name
-    let approx_label_w = (name_text.chars().count() as f32 * name_font * 0.58 + 8.0).clamp(20.0, item_w - 12.0);
+    let approx_label_w = (name_text.chars().count() as f32 * name_font * 0.55 + 8.0).clamp(20.0, item_w - 4.0);
     let label_pill_rect = Rect::from_center_size(name_rect_center, Vec2::new(approx_label_w, name_font + 6.0));
 
     // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana birebir oturan hitbox
@@ -699,11 +700,13 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
 
     // Minimum içerik genişliği: Başlıklar ve satırların dar pencerelerde ezilip iç içe girmesini önler
     let min_list_w = {
-        let size_w = state.list_columns.size_w.clamp(60.0, 300.0);
-        let perm_w = state.list_columns.perm_w.clamp(60.0, 300.0);
-        let mod_w = state.list_columns.modified_w.clamp(80.0, 400.0);
+        let size_w = if state.list_columns.show_size { state.list_columns.size_w.clamp(60.0, 300.0) + 16.0 } else { 0.0 };
+        let perm_w = if state.list_columns.show_perm { state.list_columns.perm_w.clamp(60.0, 300.0) + 16.0 } else { 0.0 };
+        let mod_w = if state.list_columns.show_modified { state.list_columns.modified_w.clamp(80.0, 400.0) + 16.0 } else { 0.0 };
+        let type_w = if state.list_columns.show_type { state.list_columns.type_w.clamp(50.0, 250.0) + 16.0 } else { 0.0 };
+        let acc_w = if state.list_columns.show_accessed { state.list_columns.accessed_w.clamp(80.0, 400.0) + 16.0 } else { 0.0 };
         let prefix_w = sp.md + 26.0;
-        let fixed_right = size_w + perm_w + mod_w + 24.0;
+        let fixed_right = size_w + perm_w + mod_w + type_w + acc_w + 32.0; // modified'ı sola çekecek rahat pay
         prefix_w + 140.0 + fixed_right // En az 140px isim alanı garanti
     };
 
@@ -737,6 +740,7 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             }).unwrap_or(false);
 
             let is_resizing_preview: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_preview")).unwrap_or(false));
+            let is_resizing_sidebar: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_sidebar")).unwrap_or(false));
             let is_resizing_column: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_column")).unwrap_or(false));
             let is_preview_open = state.panels.active == ActivePanel::Preview;
             let scroll_bar_w = (ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin + ui.spacing().scroll.bar_outer_margin).max(18.0) + 10.0;
@@ -751,10 +755,10 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
             let shift = ui.input(|i| i.modifiers.shift);
 
-            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column && !ctrl && !shift && !state.is_rubber_banding {
+            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column && !ctrl && !shift && !state.is_rubber_banding {
                 state.selection.clear();
             }
-            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
+            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
                 if let Some(pos) = ptr_pos {
                     state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
                 }
@@ -764,8 +768,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let rb_rel_y_id = Id::new(format!("rubber_band_rel_y_list_{}", pane_tag));
             let rb_init_sel_id = Id::new(format!("rubber_band_init_sel_list_{}", pane_tag));
 
-            // Only start rubber-band if press was NOT on preview resize handle, NOT on scrollbars/column resizers, and NOT dragging files
-            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_column {
+            // Only start rubber-band if press was NOT on preview/sidebar resize handle, NOT on scrollbars/column resizers, and NOT dragging files
+            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
                 if let (Some(origin), Some(cur_pos)) = (press_origin, ptr_pos) {
                     if safe_bg_rect.contains(origin) {
                         let drag_delta = cur_pos - origin;
@@ -1087,10 +1091,11 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     }
 
                     // Dynamically position columns based on state.list_columns.order:
-                    let mut cur_right = rect.max.x - 8.0;
+                    // Sağ kenardan 24px ofset ile Modified'ı daha sola alarak ferah alan sağlıyoruz
+                    let mut cur_right = rect.max.x - 24.0;
                     for col_name in state.list_columns.order.iter().rev() {
                         match col_name.as_str() {
-                            "modified" => {
+                            "modified" if state.list_columns.show_modified => {
                                 ui.painter().text(
                                     Pos2::new(cur_right, rect.min.y + row_h / 2.0),
                                     Align2::RIGHT_CENTER,
@@ -1098,9 +1103,20 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                                     FontId::new(t.typography.size_sm, FontFamily::Monospace),
                                     c.text_hint(),
                                 );
-                                cur_right -= mod_w + 8.0;
+                                cur_right -= mod_w + 12.0;
                             }
-                            "perm" => {
+                            "accessed" if state.list_columns.show_accessed => {
+                                let acc_str = if !entry.created.is_empty() { &entry.created } else { &entry.modified };
+                                ui.painter().text(
+                                    Pos2::new(cur_right, rect.min.y + row_h / 2.0),
+                                    Align2::RIGHT_CENTER,
+                                    acc_str,
+                                    FontId::new(t.typography.size_sm, FontFamily::Monospace),
+                                    c.text_hint(),
+                                );
+                                cur_right -= state.list_columns.accessed_w.clamp(80.0, 400.0) + 12.0;
+                            }
+                            "perm" if state.list_columns.show_perm => {
                                 ui.painter().text(
                                     Pos2::new(cur_right, rect.min.y + row_h / 2.0),
                                     Align2::RIGHT_CENTER,
@@ -1108,9 +1124,9 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                                     FontId::new(t.typography.size_sm, FontFamily::Monospace),
                                     c.text_hint(),
                                 );
-                                cur_right -= perm_w + 8.0;
+                                cur_right -= perm_w + 12.0;
                             }
-                            "size" => {
+                            "size" if state.list_columns.show_size => {
                                 let size_display = if entry.is_dir {
                                     if let Some(&sz) = state.du_sizes.get(&entry.path) {
                                         human_size(sz)
@@ -1132,7 +1148,24 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                                     FontId::new(t.typography.size_sm, FontFamily::Proportional),
                                     c.text_hint(),
                                 );
-                                cur_right -= size_w + 8.0;
+                                cur_right -= size_w + 12.0;
+                            }
+                            "type" if state.list_columns.show_type => {
+                                let type_str = if entry.is_dir {
+                                    "Klasör".to_string()
+                                } else if !entry.extension.is_empty() {
+                                    format!("{} Dosyası", entry.extension.to_uppercase())
+                                } else {
+                                    "Dosya".to_string()
+                                };
+                                ui.painter().text(
+                                    Pos2::new(cur_right, rect.min.y + row_h / 2.0),
+                                    Align2::RIGHT_CENTER,
+                                    type_str,
+                                    FontId::new(t.typography.size_sm, FontFamily::Proportional),
+                                    c.text_hint(),
+                                );
+                                cur_right -= state.list_columns.type_w.clamp(50.0, 250.0) + 12.0;
                             }
                             _ => {}
                         }
@@ -1298,11 +1331,13 @@ fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f
     let c = &t.colors;
 
     let prefix_w = t.spacing.md + 26.0;
-    let size_w = state.list_columns.size_w.clamp(60.0, 300.0);
-    let perm_w = state.list_columns.perm_w.clamp(60.0, 300.0);
-    let mod_w = state.list_columns.modified_w.clamp(80.0, 400.0);
+    let size_w = if state.list_columns.show_size { state.list_columns.size_w.clamp(60.0, 300.0) } else { 0.0 };
+    let perm_w = if state.list_columns.show_perm { state.list_columns.perm_w.clamp(60.0, 300.0) } else { 0.0 };
+    let mod_w = if state.list_columns.show_modified { state.list_columns.modified_w.clamp(80.0, 400.0) } else { 0.0 };
+    let type_w = if state.list_columns.show_type { state.list_columns.type_w.clamp(50.0, 250.0) } else { 0.0 };
+    let acc_w = if state.list_columns.show_accessed { state.list_columns.accessed_w.clamp(80.0, 400.0) } else { 0.0 };
 
-    let fixed_right = size_w + perm_w + mod_w + 24.0;
+    let fixed_right = size_w + perm_w + mod_w + type_w + acc_w + 32.0;
     let name_w = (w - prefix_w - fixed_right).max(100.0);
 
     let mut changed = false;
@@ -1321,9 +1356,19 @@ fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f
         sort_header(ui, t, state, "Name", crate::state::SortBy::Name, name_w, Align2::LEFT_CENTER, None);
 
         // Columns according to dynamic order:
-        for (i, col) in order.iter().enumerate() {
+        for col in &order {
             match col.as_str() {
-                "size" => {
+                "type" if state.list_columns.show_type => {
+                    let sep = column_resizer(ui, t, "resizer_type");
+                    if let Some(delta) = sep {
+                        state.list_columns.type_w = (state.list_columns.type_w - delta).clamp(50.0, 250.0);
+                        changed = true;
+                    }
+                    if sort_header(ui, t, state, "Type", crate::state::SortBy::Name, type_w, Align2::RIGHT_CENTER, Some("type")) {
+                        changed = true;
+                    }
+                }
+                "size" if state.list_columns.show_size => {
                     let sep = column_resizer(ui, t, "resizer_size");
                     if let Some(delta) = sep {
                         state.list_columns.size_w = (state.list_columns.size_w - delta).clamp(60.0, 300.0);
@@ -1333,7 +1378,7 @@ fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f
                         changed = true;
                     }
                 }
-                "perm" => {
+                "perm" if state.list_columns.show_perm => {
                     let sep = column_resizer(ui, t, "resizer_perm");
                     if let Some(delta) = sep {
                         state.list_columns.perm_w = (state.list_columns.perm_w - delta).clamp(60.0, 300.0);
@@ -1343,7 +1388,17 @@ fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f
                         changed = true;
                     }
                 }
-                "modified" => {
+                "accessed" if state.list_columns.show_accessed => {
+                    let sep = column_resizer(ui, t, "resizer_acc");
+                    if let Some(delta) = sep {
+                        state.list_columns.accessed_w = (state.list_columns.accessed_w - delta).clamp(80.0, 400.0);
+                        changed = true;
+                    }
+                    if sort_header(ui, t, state, "Accessed", crate::state::SortBy::Modified, acc_w, Align2::RIGHT_CENTER, Some("accessed")) {
+                        changed = true;
+                    }
+                }
+                "modified" if state.list_columns.show_modified => {
                     let sep = column_resizer(ui, t, "resizer_mod");
                     if let Some(delta) = sep {
                         state.list_columns.modified_w = (state.list_columns.modified_w - delta).clamp(80.0, 400.0);
@@ -1365,6 +1420,8 @@ fn list_headers_with_width(ui: &mut Ui, t: &AexTheme, state: &mut AppState, w: f
                     "modified" => state.list_columns.modified_w = (state.list_columns.modified_w + delta).clamp(80.0, 400.0),
                     "size" => state.list_columns.size_w = (state.list_columns.size_w + delta).clamp(60.0, 300.0),
                     "perm" => state.list_columns.perm_w = (state.list_columns.perm_w + delta).clamp(60.0, 300.0),
+                    "type" => state.list_columns.type_w = (state.list_columns.type_w + delta).clamp(50.0, 250.0),
+                    "accessed" => state.list_columns.accessed_w = (state.list_columns.accessed_w + delta).clamp(80.0, 400.0),
                     _ => {}
                 }
                 changed = true;
@@ -1788,6 +1845,13 @@ pub fn open_entry(state: &mut AppState, entry: &FileEntry) {
                 };
             });
             state.notify.info(format!("Terminal ile çalıştırıldı: {}", entry.name));
+        } else if matches!(ext.as_str(), "exe" | "msi" | "bat") {
+            // Windows çalıştırılabilir dosyalarını Wine ile doğrudan aç
+            let path_clone = entry.path.clone();
+            std::thread::spawn(move || {
+                let _ = crate::backend::open_with::open_with_wine(&path_clone);
+            });
+            state.notify.info(format!("Wine ile başlatılıyor: {}", entry.name));
         } else {
             // Diğer dosyaları xdg-open ile aç
             std::process::Command::new("xdg-open")

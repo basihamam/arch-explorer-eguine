@@ -467,6 +467,24 @@ fn tab_layout(ui: &mut Ui, t: &AexTheme, state: &mut AppState, engine: &mut Them
     if ui.checkbox(&mut thumbnails, RichText::new("Show thumbnails").color(c.text_secondary()).size(t.typography.size_sm)).changed() {
         engine.active.file_grid.thumbnail_enabled = thumbnails;
     }
+
+    ui.add_space(sp.md);
+    section(ui, t, "LIST VIEW COLUMNS");
+    ui.add_space(sp.sm);
+
+    let mut cols_changed = false;
+    ui.label(RichText::new("Liste görünümünde görüntülenecek sütunlar:").color(c.text_hint()).size(t.typography.size_xs));
+    ui.add_space(sp.xs);
+
+    cols_changed |= ui.checkbox(&mut state.list_columns.show_type, RichText::new("Dosya Türü (Type)").color(c.text_secondary()).size(t.typography.size_sm)).changed();
+    cols_changed |= ui.checkbox(&mut state.list_columns.show_size, RichText::new("Boyut (Size)").color(c.text_secondary()).size(t.typography.size_sm)).changed();
+    cols_changed |= ui.checkbox(&mut state.list_columns.show_perm, RichText::new("İzinler (Permissions)").color(c.text_secondary()).size(t.typography.size_sm)).changed();
+    cols_changed |= ui.checkbox(&mut state.list_columns.show_modified, RichText::new("Değiştirilme Tarihi (Modified)").color(c.text_secondary()).size(t.typography.size_sm)).changed();
+    cols_changed |= ui.checkbox(&mut state.list_columns.show_accessed, RichText::new("Erişim / Oluşturulma (Accessed / Created)").color(c.text_secondary()).size(t.typography.size_sm)).changed();
+
+    if cols_changed {
+        state.save_list_columns();
+    }
 }
 
 // ── Behavior Tab ──────────────────────────────────────────────────────────────

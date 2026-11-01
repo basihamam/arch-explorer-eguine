@@ -57,7 +57,14 @@ fn parse_desktop_file(path: &Path) -> Option<(AppEntry, Vec<String>)> {
                 "Comment"   => { comment = Some(v.trim().into()); }
                 "Categories"=> { categories = v.trim().split(';').filter(|s| !s.is_empty()).map(String::from).collect(); }
                 "MimeType"  => { mime_types = v.trim().split(';').filter(|s| !s.is_empty()).map(String::from).collect(); }
-                "NoDisplay" => { no_display = v.trim().eq_ignore_ascii_case("true"); }
+                "NoDisplay" => {
+                    let val = v.trim().eq_ignore_ascii_case("true");
+                    // wine.desktop NoDisplay=true olsa bile dosya açıcı olarak geçerlidir!
+                    let is_wine = path.file_name().and_then(|n| n.to_str()) == Some("wine.desktop");
+                    if !is_wine {
+                        no_display = val;
+                    }
+                }
                 "Type"      => { if v.trim() != "Application" { return None; } }
                 _ => {}
             }
@@ -105,19 +112,42 @@ fn get_cached_mime_index() -> HashMap<String, Vec<AppEntry>> {
 pub fn get_open_with_info(path: String) -> Result<OpenWithInfo, String> {
     // 1. Önce dosya uzantısından anında tespit et (process spawn etmeden 0ms)
     let p = Path::new(&path);
-    let mime = mime_guess::from_path(p)
-        .first()
-        .map(|m| m.to_string())
-        .or_else(|| {
-            // Sadece uzantısız dosyalarda xdg-mime fallback'i çalıştır
-            let out = Command::new("xdg-mime").args(["query", "filetype", &path]).output().ok()?;
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        })
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let mime = if matches!(ext.as_str(), "exe" | "msi" | "bat" | "cmd") {
+        "application/x-ms-dos-executable".to_string()
+    } else {
+        mime_guess::from_path(p)
+            .first()
+            .map(|m| m.to_string())
+            .or_else(|| {
+                // Sadece uzantısız dosyalarda xdg-mime fallback'i çalıştır
+                let out = Command::new("xdg-mime").args(["query", "filetype", &path]).output().ok()?;
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    };
 
     let index = get_cached_mime_index();
-    let apps = index.get(&mime).cloned().unwrap_or_default();
+    let mut apps = index.get(&mime).cloned().unwrap_or_default();
+
+    // Eğer exe/msi/bat ise ve listede wine yoksa doğrudan wine ekle
+    if matches!(ext.as_str(), "exe" | "msi" | "bat" | "cmd") {
+        if !apps.iter().any(|a| a.id == "wine.desktop" || a.name.to_lowercase().contains("wine")) {
+            if let Some(wine_entry) = find_desktop_entry_by_id("wine.desktop") {
+                apps.insert(0, wine_entry);
+            } else if Command::new("which").arg("wine").output().map(|o| o.status.success()).unwrap_or(false) {
+                apps.insert(0, AppEntry {
+                    id: "wine.desktop".to_string(),
+                    name: "Wine Windows Program Loader".to_string(),
+                    exec: "wine start /unix %f".to_string(),
+                    icon: Some("wine".to_string()),
+                    comment: Some("Windows uygulamalarını Wine ile çalıştır".to_string()),
+                    categories: vec!["Utility".to_string()],
+                });
+            }
+        }
+    }
 
     // Default app'i bul
     let default_app = apps.first().map(|a| a.id.clone());
@@ -125,9 +155,63 @@ pub fn get_open_with_info(path: String) -> Result<OpenWithInfo, String> {
     Ok(OpenWithInfo { mime_type: mime, default_app, apps })
 }
 
+pub fn find_desktop_entry_by_id(id: &str) -> Option<AppEntry> {
+    for dir in app_dirs() {
+        let p = dir.join(id);
+        if p.exists() {
+            if let Some((app, _)) = parse_desktop_file(&p) {
+                return Some(app);
+            }
+        }
+    }
+    None
+}
+
 pub fn open_with_app(path: String, desktop_id: String) -> Result<(), String> {
-    Command::new("gtk-launch").arg(&desktop_id).arg(&path)
-        .spawn().map_err(|e| e.to_string())?;
+    let p = Path::new(&path);
+    let parent = p.parent().unwrap_or_else(|| Path::new("/"));
+
+    // Wine veya custom desktop için özel çalıştırma desteği
+    if desktop_id == "wine.desktop" || desktop_id == "wine" {
+        return open_with_wine(&path);
+    }
+
+    // İlk olarak .desktop dosyasını bulup içindeki Exec satırını güvenle parse et
+    if let Some(app) = find_desktop_entry_by_id(&desktop_id) {
+        if app.exec.contains("wine") {
+            return open_with_wine(&path);
+        }
+        return open_with_exec(path, app.exec);
+    }
+
+    // gtk-launch fallback
+    let status = Command::new("gtk-launch").arg(&desktop_id).arg(&path).current_dir(parent).spawn();
+    if let Ok(_) = status {
+        return Ok(());
+    }
+
+    // xdg-open fallback
+    Command::new("xdg-open").arg(&path).current_dir(parent).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn open_with_wine(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    let parent = p.parent().unwrap_or_else(|| Path::new("/"));
+    // 1. wine start /unix <path>
+    let res = Command::new("wine")
+        .args(["start", "/unix", path])
+        .current_dir(parent)
+        .spawn();
+    if res.is_ok() {
+        return Ok(());
+    }
+    // 2. Doğrudan wine <path>
+    Command::new("wine")
+        .arg(path)
+        .current_dir(parent)
+        .spawn()
+        .map_err(|e| format!("Wine çalıştırma hatası: {}", e))?;
     Ok(())
 }
 
