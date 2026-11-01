@@ -1,7 +1,7 @@
 # ◈ Arch Explorer (egui v2 Native)
 
 <p align="center">
-  <img src="docs/screenshots/arch_explorer_multiselection_transparent.gif" alt="Arch Explorer Transparent Multiselection Demo" width="92%">
+  <img src="docs/assets/arch_explorer_multiselection_transparent.gif?v=2" alt="Arch Explorer Native Multi-Selection Demo" width="92%">
 </p>
 
 <p align="center">
@@ -91,35 +91,35 @@ cargo run --release
 ## 📸 Visual Showcase
 
 <p align="center">
-  <img src="docs/screenshots/arch_explorer_transparent_demo.gif" alt="Arch Explorer Desktop Flow Demo" width="90%">
+  <img src="docs/assets/arch_explorer_transparent_demo.gif?v=2" alt="Arch Explorer Desktop Flow Demo" width="90%">
 </p>
 
 ### 1. Main Transparent Workspace & Dual Pane
 Arch Explorer blends with your desktop wallpaper and system themes with full hardware-accelerated transparency.
 
 <p align="center">
-  <img src="docs/screenshots/01_arch_explorer_main_transparent.png" alt="Main Window Transparency" width="88%">
+  <img src="docs/assets/01_arch_explorer_main_transparent.png?v=2" alt="Main Window Transparency" width="88%">
 </p>
 
 ### 2. Live Appearance & Theme Settings
 Customize accent colors, window blur (0–40px), card transparency, and UI scaling on the fly.
 
 <p align="center">
-  <img src="docs/screenshots/02_settings_appearance_transparent.png" alt="Settings & Glass Blur" width="88%">
+  <img src="docs/assets/02_settings_appearance_transparent.png?v=2" alt="Settings & Glass Blur" width="88%">
 </p>
 
 ### 3. Folder Previews & Dynamic Layout
 Interactive preview modes (Always, Automatic, Manual, Custom) with instant metadata inspection.
 
 <p align="center">
-  <img src="docs/screenshots/04_settings_layout_folder_preview.png" alt="Layout & Folder Preview Controls" width="88%">
+  <img src="docs/assets/04_settings_layout_folder_preview.png?v=2" alt="Layout & Folder Preview Controls" width="88%">
 </p>
 
 ### 4. Transparent Context Menu & Quick Actions
 Context menus featuring fast Open With recommendations, Archive operations, and Trash management.
 
 <p align="center">
-  <img src="docs/screenshots/05_context_menu_transparent.png" alt="Transparent Context Menu" width="88%">
+  <img src="docs/assets/05_context_menu_transparent.png?v=2" alt="Transparent Context Menu" width="88%">
 </p>
 
 ---
