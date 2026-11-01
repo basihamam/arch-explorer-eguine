@@ -612,11 +612,34 @@ fn undo_single_action(action: &UndoAction, restored: &mut Vec<String>) -> Result
             format!("Geri alındı: üzerine yazılan eski dosya geri getirildi ({})", dest)
         }
         UndoAction::Batch(actions) => {
-            let count = actions.len();
-            for a in actions.iter().rev() {
-                let _ = undo_single_action(a, restored);
+            // Eğer batch içindeki tüm elemanlar UndoAction::Delete ise,
+            // tek tek sudo/pkexec çalıştırmasın diye topluca restore_from_trash_batch çağır!
+            let all_deletes = actions.iter().all(|a| matches!(a, UndoAction::Delete { .. }));
+            if all_deletes && !actions.is_empty() {
+                let paths: Vec<String> = actions.iter().filter_map(|a| {
+                    if let UndoAction::Delete { path, .. } = a {
+                        Some(path.clone())
+                    } else {
+                        None
+                    }
+                }).collect();
+                match crate::backend::fs_ops::restore_from_trash_batch(&paths) {
+                    Ok(mut restored_paths) => {
+                        let count = restored_paths.len();
+                        restored.append(&mut restored_paths);
+                        format!("Silme geri alındı: {} öğe çöp kutusundan geri yüklendi", count)
+                    }
+                    Err(e) => {
+                        return Err(format!("Toplu silme geri alınamadı: {}", e));
+                    }
+                }
+            } else {
+                let count = actions.len();
+                for a in actions.iter().rev() {
+                    let _ = undo_single_action(a, restored);
+                }
+                format!("Geri alındı: {} öğelik toplu işlem geri alındı", count)
             }
-            format!("Geri alındı: {} öğelik toplu işlem geri alındı", count)
         }
     };
 

@@ -206,18 +206,19 @@ pub fn render(
                         if is_current_in_trash {
                             if ctx_item_colored(ui, t, icon(t, "refresh"), "Restore from Trash", None, c.accent()).ctx_act() {
                                 let paths = selected.clone();
-                                let mut restored = Vec::new();
-                                for p in &paths {
-                                    match crate::backend::fs_ops::restore_from_trash(p) {
-                                        Ok(orig) => restored.push(orig),
-                                        Err(e) => state.notify.error(format!("Geri yükleme hatası: {}", e)),
+                                match crate::backend::fs_ops::restore_from_trash_batch(&paths) {
+                                    Ok(restored) => {
+                                        state.refresh();
+                                        if !restored.is_empty() {
+                                            let count = restored.len();
+                                            state.notify.success(format!("{} öğe çöp kutusundan geri yüklendi", count));
+                                            state.select_paths_and_queue(restored);
+                                        }
                                     }
-                                }
-                                state.refresh();
-                                if !restored.is_empty() {
-                                    let count = restored.len();
-                                    state.notify.success(format!("{} öğe çöp kutusundan geri yüklendi", count));
-                                    state.select_paths_and_queue(restored);
+                                    Err(e) => {
+                                        state.refresh();
+                                        state.notify.error(format!("Geri yükleme hatası: {}", e));
+                                    }
                                 }
                                 state.panels.close_context_menu();
                             }
@@ -408,16 +409,18 @@ pub fn render(
                     if is_current_in_trash {
                         if ctx_item_colored(ui, t, icon(t, "refresh"), "Restore All Items", None, c.accent()).ctx_act() {
                             let entries = state.dir.entries.clone();
-                            let mut restored = Vec::new();
-                            for e in entries.iter() {
-                                match crate::backend::fs_ops::restore_from_trash(&e.path) {
-                                    Ok(orig) => restored.push(orig),
-                                    Err(_) => {},
+                            let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
+                            match crate::backend::fs_ops::restore_from_trash_batch(&paths) {
+                                Ok(restored) => {
+                                    state.refresh();
+                                    if !restored.is_empty() {
+                                        state.notify.success(format!("{} öğe çöp kutusundan geri yüklendi", restored.len()));
+                                    }
                                 }
-                            }
-                            state.refresh();
-                            if !restored.is_empty() {
-                                state.notify.success(format!("{} öğe çöp kutusundan geri yüklendi", restored.len()));
+                                Err(e) => {
+                                    state.refresh();
+                                    state.notify.error(format!("Geri yükleme hatası: {}", e));
+                                }
                             }
                             state.panels.close_context_menu();
                         }

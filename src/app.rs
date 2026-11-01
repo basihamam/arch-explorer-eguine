@@ -44,7 +44,7 @@ pub enum BackendMsg {
         sync_nav: Option<String>,
     },
     // inotify — dizin değişti, reload tetikle
-    DirectoryChanged,
+    DirectoryChanged(String),
     // Checksum sonucu
     ChecksumDone { md5: String, sha256: String, path: String },
     // Du cache — klasör boyutu hesaplandı
@@ -92,8 +92,8 @@ pub struct ArchExplorer {
 
     // inotify watcher — drop edilirse izleme durur
     _watcher: Option<notify::RecommendedWatcher>,
-    // Son izlenen dizin
-    watched_path: String,
+    // Aktif izlenen dizinler
+    watched_paths: std::collections::HashSet<String>,
     // Periyodik sidebar (disk & adb) taraması
     last_sidebar_refresh: std::time::Instant,
 }
@@ -132,7 +132,7 @@ impl ArchExplorer {
             state: AppState::new(),
             tx, rx, runtime,
             _watcher: None,
-            watched_path: String::new(),
+            watched_paths: std::collections::HashSet::new(),
             last_sidebar_refresh: std::time::Instant::now(),
         };
 
@@ -262,39 +262,78 @@ impl ArchExplorer {
     }
 
     // ── inotify watcher ──────────────────────────────────────────────────────
-    // Dizin değişince 400ms sonra otomatik reload
+    // Sekmelerdeki veya mevcut dizindeki değişiklikleri izler ve ilgili sekmeleri günceller
 
-    fn start_watcher(&mut self, path: &str) {
-        use crate::backend::watcher::watch_directory;
+    fn sync_watchers(&mut self) {
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
-        if self.watched_path == path { return; } // Zaten izleniyor
-        self.watched_path = path.to_string();
+        // İzlenmesi gereken tüm dizinleri topla (aktif sekmeler + mevcut yol)
+        let mut target_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for tab in &self.state.tabs.tabs {
+            if !tab.path.starts_with("adb://") && !tab.path.starts_with("trash:") && std::path::Path::new(&tab.path).exists() {
+                target_paths.insert(tab.path.clone());
+            }
+        }
+        let cur = &self.state.nav.current_path;
+        if !cur.starts_with("adb://") && !cur.starts_with("trash:") && std::path::Path::new(cur).exists() {
+            target_paths.insert(cur.clone());
+        }
+
+        if target_paths == self.watched_paths && self._watcher.is_some() {
+            return;
+        }
+
+        self.watched_paths = target_paths.clone();
 
         let tx = self.tx.clone();
-        // mpsc bridge — notify → BackendMsg
         let (wtx, wrx) = std::sync::mpsc::channel::<String>();
 
-        let watcher = watch_directory(path, wtx).ok();
-        self._watcher = watcher;
-
-        // Debounce thread: 400ms beklendikten sonra DirectoryChanged gönder
-        std::thread::spawn(move || {
-            let mut last = std::time::Instant::now();
-            loop {
-                match wrx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(_) => { last = std::time::Instant::now(); }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        if last.elapsed() > std::time::Duration::from_millis(400) {
-                            tx.send(BackendMsg::DirectoryChanged).ok();
-                            // Bir sonraki değişikliği bekle
-                            last = std::time::Instant::now()
-                                + std::time::Duration::from_secs(9999);
-                        }
+        let watcher_res = RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    if let Some(p) = event.paths.first() {
+                        let dir = if p.is_dir() {
+                            p.to_string_lossy().to_string()
+                        } else if let Some(parent) = p.parent() {
+                            parent.to_string_lossy().to_string()
+                        } else {
+                            p.to_string_lossy().to_string()
+                        };
+                        wtx.send(dir).ok();
                     }
-                    Err(_) => break, // channel kapandı
                 }
+            },
+            Config::default().with_poll_interval(std::time::Duration::from_millis(500)),
+        );
+
+        if let Ok(mut watcher) = watcher_res {
+            for p in &target_paths {
+                let _ = watcher.watch(std::path::Path::new(p), RecursiveMode::NonRecursive);
             }
-        });
+            self._watcher = Some(watcher);
+
+            // Debounce thread: 300ms beklendikten sonra DirectoryChanged(changed_dir) gönder
+            std::thread::spawn(move || {
+                let mut last = std::time::Instant::now();
+                let mut pending_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+                loop {
+                    match wrx.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(dir) => {
+                            pending_dirs.insert(dir);
+                            last = std::time::Instant::now();
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if !pending_dirs.is_empty() && last.elapsed() > std::time::Duration::from_millis(300) {
+                                for dir in pending_dirs.drain() {
+                                    tx.send(BackendMsg::DirectoryChanged(dir)).ok();
+                                }
+                            }
+                        }
+                        Err(_) => break, // channel kapandı
+                    }
+                }
+            });
+        }
     }
 
     // ── Du cache ─────────────────────────────────────────────────────────────
@@ -737,13 +776,31 @@ impl ArchExplorer {
                 BackendMsg::MountWrongPassword { device, label } => {
                     self.state.pending_mount_wrong = Some((device, label));
                 }
-                BackendMsg::DirectoryChanged => {
-                    // inotify — dizin değişti, reload tetikle
-                    if !self.state.dir.is_loading {
-                        self.state.needs_reload = true;
+                BackendMsg::DirectoryChanged(changed_dir) => {
+                    // inotify — bir klasörde değişiklik oldu, ilgili sekmeleri ve aktif görünümü otomatik yenile
+                    let cur_norm = self.state.nav.current_path.trim_end_matches('/');
+                    let chg_norm = changed_dir.trim_end_matches('/');
+
+                    let matches_current = cur_norm == chg_norm
+                        || std::fs::canonicalize(cur_norm).map(|c| c.to_string_lossy().trim_end_matches('/').to_string()).unwrap_or_default()
+                           == std::fs::canonicalize(chg_norm).map(|c| c.to_string_lossy().trim_end_matches('/').to_string()).unwrap_or_default();
+
+                    if matches_current {
+                        if !self.state.dir.is_loading {
+                            self.state.needs_reload = true;
+                        }
                     }
+
+                    // Arka plandaki diğer sekmelerin önbelleğini de geçersiz kıl ki o sekmeye geçildiğinde eski liste kalmasın
+                    for tab in &mut self.state.tabs.tabs {
+                        let tab_norm = tab.path.trim_end_matches('/');
+                        if tab_norm == chg_norm {
+                            tab.entries = None;
+                        }
+                    }
+
                     // Du cache'i invalidate et
-                    crate::backend::du_cache::invalidate(&self.state.nav.current_path);
+                    crate::backend::du_cache::invalidate(&changed_dir);
                 }
                 BackendMsg::ChecksumDone { md5, sha256, path } => {
                     self.state.pending_checksum = Some((path, md5, sha256));
@@ -894,10 +951,7 @@ impl eframe::App for ArchExplorer {
 
         // 3. Yeniden yükleme gerekiyor mu?
         if self.state.needs_reload {
-            let path = self.state.nav.current_path.clone();
-            if !path.starts_with("adb://") {
-                self.start_watcher(&path);  // inotify — sadece yerel dosya sistemini izle
-            }
+            self.sync_watchers(); // inotify — açık sekmelerdeki dizinleri ve aktif gezinme yolunu izle
             self.load_current_directory();
         }
 

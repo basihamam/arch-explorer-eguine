@@ -602,109 +602,175 @@ fn percent_decode(s: &str) -> String {
 }
 
 pub fn restore_from_trash(target: &str) -> Result<String, String> {
+    let results = restore_from_trash_batch(&[target.to_string()])?;
+    results.into_iter().next().ok_or_else(|| "Geri yükleme sonucu alınamadı".to_string())
+}
+
+pub fn restore_from_trash_batch(targets: &[String]) -> Result<Vec<String>, String> {
     let trash_files = resolve_trash_dir();
     let trash_parent = trash_files.parent().ok_or_else(|| "Trash parent bulunamadı".to_string())?;
     let trash_info_dir = trash_parent.join("info");
 
-    let target_decoded = percent_decode(target);
-    let p = Path::new(&target_decoded);
+    struct PlannedRestore {
+        trash_file: PathBuf,
+        target_path: PathBuf,
+        info_file: Option<PathBuf>,
+        orig_str: String,
+    }
 
-    // Normalize path if it's a trash: URI
-    let clean_str = if let Some(s) = target_decoded.strip_prefix("trash:///") {
-        s
-    } else if let Some(s) = target_decoded.strip_prefix("trash://") {
-        s
-    } else if let Some(s) = target_decoded.strip_prefix("trash:") {
-        s
-    } else {
-        target_decoded.as_str()
-    };
-    let clean_path = Path::new(clean_str);
+    let mut planned = Vec::new();
 
-    // Geri taşıma helper'ı — yetki yetersizse sudo/pkexec fallback'i ile taşır
-    let move_back = |src: &Path, dst: &Path| -> Result<(), String> {
-        if let Some(parent) = dst.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Err(e) = crate::backend::clipboard::move_item_inner(src, dst) {
-            let err_lower = e.to_string().to_lowercase();
-            if err_lower.contains("permission denied")
-                || err_lower.contains("access denied")
-                || err_lower.contains("işlem engellendi")
-                || err_lower.contains("operation not permitted")
-            {
-                let cmd = format!("mv {:?} {:?}", src.to_string_lossy(), dst.to_string_lossy());
-                let ok = if crate::backend::fs_ops::get_root_password().is_some() {
-                    crate::backend::fs_ops::sudo_run_elevated("bash", &["-c", &cmd]).is_ok()
-                } else {
-                    std::process::Command::new("pkexec")
-                        .args(["bash", "-c", &cmd])
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                };
-                if !ok {
-                    return Err(format!("Geri yükleme için yetki sağlanamadı: {}", e));
-                }
-            } else {
-                return Err(format!("Geri yükleme taşınamadı: {}", e));
-            }
-        }
-        Ok(())
-    };
+    for target in targets {
+        let target_decoded = percent_decode(target);
+        let p = Path::new(&target_decoded);
 
-    // Case 1: Hedef çöp kutusunun içindeki bir öğe (ör. Trash görünümünden geri yükleme)
-    let is_in_trash_files = clean_path.starts_with(&trash_files)
-        || p.starts_with(&trash_files)
-        || target.starts_with("trash:")
-        || (!clean_path.is_absolute() && trash_files.join(clean_path).exists());
-
-    if is_in_trash_files {
-        let file_name = clean_path.file_name()
-            .or_else(|| p.file_name())
-            .ok_or_else(|| "Geçersiz dosya adı".to_string())?
-            .to_string_lossy()
-            .to_string();
-
-        let trash_file = if clean_path.is_absolute() && clean_path.exists() {
-            clean_path.to_path_buf()
+        // Normalize path if it's a trash: URI
+        let clean_str = if let Some(s) = target_decoded.strip_prefix("trash:///") {
+            s
+        } else if let Some(s) = target_decoded.strip_prefix("trash://") {
+            s
+        } else if let Some(s) = target_decoded.strip_prefix("trash:") {
+            s
         } else {
-            trash_files.join(&file_name)
+            target_decoded.as_str()
         };
+        let clean_path = Path::new(clean_str);
 
-        let info_file = trash_info_dir.join(format!("{}.trashinfo", file_name));
+        // Case 1: Hedef çöp kutusunun içindeki bir öğe (ör. Trash görünümünden geri yükleme)
+        let is_in_trash_files = clean_path.starts_with(&trash_files)
+            || p.starts_with(&trash_files)
+            || target.starts_with("trash:")
+            || (!clean_path.is_absolute() && trash_files.join(clean_path).exists());
 
-        // 1. Doğrudan dosya adı ile eşleşen .trashinfo varsa oku
-        if info_file.exists() {
-            if let Ok(content) = fs::read_to_string(&info_file) {
-                for line in content.lines() {
-                    if let Some(raw_path) = line.strip_prefix("Path=") {
-                        let orig_path = percent_decode(raw_path.trim());
-                        let orig_p = PathBuf::from(&orig_path);
-                        move_back(&trash_file, &orig_p)?;
-                        let _ = fs::remove_file(&info_file);
-                        return Ok(orig_path);
+        if is_in_trash_files {
+            let file_name = clean_path.file_name()
+                .or_else(|| p.file_name())
+                .ok_or_else(|| "Geçersiz dosya adı".to_string())?
+                .to_string_lossy()
+                .to_string();
+
+            let trash_file = if clean_path.is_absolute() && clean_path.exists() {
+                clean_path.to_path_buf()
+            } else {
+                trash_files.join(&file_name)
+            };
+
+            let info_file = trash_info_dir.join(format!("{}.trashinfo", file_name));
+            let mut resolved = false;
+
+            // 1. Doğrudan dosya adı ile eşleşen .trashinfo varsa oku
+            if info_file.exists() {
+                if let Ok(content) = fs::read_to_string(&info_file) {
+                    for line in content.lines() {
+                        if let Some(raw_path) = line.strip_prefix("Path=") {
+                            let orig_path = percent_decode(raw_path.trim());
+                            let orig_p = PathBuf::from(&orig_path);
+                            planned.push(PlannedRestore {
+                                trash_file: trash_file.clone(),
+                                target_path: orig_p,
+                                info_file: Some(info_file.clone()),
+                                orig_str: orig_path,
+                            });
+                            resolved = true;
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        // 2. Info dizinini tara (.trashinfo adı uzantı farkı içeriyorsa)
-        if trash_info_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&trash_info_dir) {
-                for entry in entries.flatten() {
-                    let ipath = entry.path();
-                    if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
-                        let stem = ipath.file_stem().unwrap_or_default().to_string_lossy();
-                        if stem == file_name {
+            // 2. Info dizinini tara (.trashinfo adı uzantı farkı içeriyorsa)
+            if !resolved && trash_info_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&trash_info_dir) {
+                    for entry in entries.flatten() {
+                        let ipath = entry.path();
+                        if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
+                            let stem = ipath.file_stem().unwrap_or_default().to_string_lossy();
+                            if stem == file_name {
+                                if let Ok(content) = fs::read_to_string(&ipath) {
+                                    for line in content.lines() {
+                                        if let Some(raw_path) = line.strip_prefix("Path=") {
+                                            let orig_path = percent_decode(raw_path.trim());
+                                            let orig_p = PathBuf::from(&orig_path);
+                                            planned.push(PlannedRestore {
+                                                trash_file: trash_file.clone(),
+                                                target_path: orig_p,
+                                                info_file: Some(ipath.clone()),
+                                                orig_str: orig_path,
+                                            });
+                                            resolved = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if resolved { break; }
+                    }
+                }
+            }
+
+            // 3. Fallback: Eğer dosyanın herhangi bir .trashinfo kaydı yoksa veya silinmişse,
+            // kullanıcı dosyayı kaybetmesin diye ev dizinine (~) geri taşı
+            if !resolved {
+                if trash_file.exists() {
+                    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/aiuser"));
+                    let final_target = crate::backend::clipboard::resolve_conflict(&home_dir, &file_name);
+                    let orig_str = final_target.to_string_lossy().to_string();
+                    planned.push(PlannedRestore {
+                        trash_file,
+                        target_path: final_target,
+                        info_file: None,
+                        orig_str,
+                    });
+                } else {
+                    return Err(format!("Çöp kutusunda '{}' dosyası bulunamadı", file_name));
+                }
+            }
+        } else {
+            // Case 2: Hedef silinen orijinal konum (ör. Ctrl+Z / Undo işlemi)
+            let target_norm = target_decoded.trim_end_matches('/');
+            let target_p = Path::new(target_norm);
+            let target_fname = target_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let target_canon_parent = target_p.parent().and_then(|pr| fs::canonicalize(pr).ok());
+
+            let mut matches: Vec<(String, PathBuf, PathBuf, String)> = Vec::new(); // (date, trashinfo_path, trash_file, orig_path)
+
+            if trash_info_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&trash_info_dir) {
+                    for entry in entries.flatten() {
+                        let ipath = entry.path();
+                        if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
                             if let Ok(content) = fs::read_to_string(&ipath) {
+                                let mut item_path = String::new();
+                                let mut del_date = String::new();
                                 for line in content.lines() {
                                     if let Some(raw_path) = line.strip_prefix("Path=") {
-                                        let orig_path = percent_decode(raw_path.trim());
-                                        let orig_p = PathBuf::from(&orig_path);
-                                        move_back(&trash_file, &orig_p)?;
-                                        let _ = fs::remove_file(&ipath);
-                                        return Ok(orig_path);
+                                        item_path = percent_decode(raw_path.trim()).trim_end_matches('/').to_string();
+                                    } else if let Some(raw_date) = line.strip_prefix("DeletionDate=") {
+                                        del_date = raw_date.trim().to_string();
+                                    }
+                                }
+
+                                let ip_p = Path::new(&item_path);
+                                let ip_fname = ip_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                let is_match = if item_path == target_norm || &item_path == target {
+                                    true
+                                } else if ip_fname == target_fname {
+                                    // Canonical parent karşılaştırması (symlink çözümü)
+                                    if let (Some(ref tcp), Some(ip_parent)) = (&target_canon_parent, ip_p.parent()) {
+                                        fs::canonicalize(ip_parent).map(|icp| &icp == tcp).unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                if is_match {
+                                    let stem = ipath.file_stem().unwrap_or_default();
+                                    let tfile = trash_files.join(stem);
+                                    if tfile.exists() {
+                                        matches.push((del_date, ipath, tfile, item_path));
                                     }
                                 }
                             }
@@ -712,83 +778,92 @@ pub fn restore_from_trash(target: &str) -> Result<String, String> {
                     }
                 }
             }
-        }
 
-        // 3. Fallback: Eğer dosyanın herhangi bir .trashinfo kaydı yoksa veya silinmişse,
-        // kullanıcı dosyayı kaybetmesin diye ev dizinine (~) geri taşı
-        if trash_file.exists() {
-            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/aiuser"));
-            let final_target = crate::backend::clipboard::resolve_conflict(&home_dir, &file_name);
-            move_back(&trash_file, &final_target)?;
-            return Ok(final_target.to_string_lossy().to_string());
-        }
+            // En son silinen en başta olacak şekilde DeletionDate azalan sırala
+            matches.sort_by(|a, b| b.0.cmp(&a.0));
 
-        return Err(format!("Çöp kutusunda '{}' dosyası bulunamadı", file_name));
+            if let Some((_, info_path, trash_file, orig_path)) = matches.into_iter().next() {
+                let orig_p = PathBuf::from(&orig_path);
+                planned.push(PlannedRestore {
+                    trash_file,
+                    target_path: orig_p,
+                    info_file: Some(info_path),
+                    orig_str: orig_path,
+                });
+            } else {
+                return Err(format!("Çöp kutusunda eşleşen kayıt bulunamadı: {}", target));
+            }
+        }
     }
 
-    // Case 2: Hedef silinen orijinal konum (ör. Ctrl+Z / Undo işlemi)
-    let target_norm = target_decoded.trim_end_matches('/');
-    let target_p = Path::new(target_norm);
-    let target_fname = target_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let target_canon_parent = target_p.parent().and_then(|pr| fs::canonicalize(pr).ok());
+    // Şimdi taşıma işlemlerini yap:
+    // 1. Önce normal kullanıcı yetkisiyle taşımayı dene
+    let mut needs_elevation: Vec<PlannedRestore> = Vec::new();
+    let mut success_restored: Vec<String> = Vec::new();
 
-    let mut matches: Vec<(String, PathBuf, PathBuf, String)> = Vec::new(); // (date, trashinfo_path, trash_file, orig_path)
-
-    if trash_info_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&trash_info_dir) {
-            for entry in entries.flatten() {
-                let ipath = entry.path();
-                if ipath.extension().and_then(|e| e.to_str()) == Some("trashinfo") {
-                    if let Ok(content) = fs::read_to_string(&ipath) {
-                        let mut item_path = String::new();
-                        let mut del_date = String::new();
-                        for line in content.lines() {
-                            if let Some(raw_path) = line.strip_prefix("Path=") {
-                                item_path = percent_decode(raw_path.trim()).trim_end_matches('/').to_string();
-                            } else if let Some(raw_date) = line.strip_prefix("DeletionDate=") {
-                                del_date = raw_date.trim().to_string();
-                            }
-                        }
-
-                        let ip_p = Path::new(&item_path);
-                        let ip_fname = ip_p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        let is_match = if item_path == target_norm || item_path == target {
-                            true
-                        } else if ip_fname == target_fname {
-                            // Canonical parent karşılaştırması (symlink çözümü)
-                            if let (Some(ref tcp), Some(ip_parent)) = (&target_canon_parent, ip_p.parent()) {
-                                fs::canonicalize(ip_parent).map(|icp| &icp == tcp).unwrap_or(false)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if is_match {
-                            let stem = ipath.file_stem().unwrap_or_default();
-                            let tfile = trash_files.join(stem);
-                            if tfile.exists() {
-                                matches.push((del_date, ipath, tfile, item_path));
-                            }
-                        }
-                    }
+    for item in planned {
+        if let Some(parent) = item.target_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match crate::backend::clipboard::move_item_inner(&item.trash_file, &item.target_path) {
+            Ok(()) => {
+                if let Some(ref ifile) = item.info_file {
+                    let _ = fs::remove_file(ifile);
+                }
+                success_restored.push(item.orig_str);
+            }
+            Err(e) => {
+                let err_lower = e.to_string().to_lowercase();
+                if err_lower.contains("permission denied")
+                    || err_lower.contains("access denied")
+                    || err_lower.contains("işlem engellendi")
+                    || err_lower.contains("operation not permitted")
+                {
+                    needs_elevation.push(item);
+                } else {
+                    return Err(format!("Geri yükleme taşınamadı: {}", e));
                 }
             }
         }
     }
 
-    // En son silinen en başta olacak şekilde DeletionDate azalan sırala
-    matches.sort_by(|a, b| b.0.cmp(&a.0));
+    // 2. Yetki gereken dosyalar varsa TEK SEFERDE toplu komut ile root çalıştır
+    if !needs_elevation.is_empty() {
+        let mut script_lines = Vec::new();
+        for item in &needs_elevation {
+            let src = item.trash_file.to_string_lossy().to_string();
+            let dst = item.target_path.to_string_lossy().to_string();
+            if let Some(parent) = item.target_path.parent() {
+                script_lines.push(format!("mkdir -p {:?}", parent.to_string_lossy()));
+            }
+            script_lines.push(format!("mv {:?} {:?}", src, dst));
+            script_lines.push(format!("chown -R $(id -u):$(id -g) {:?}", dst));
+        }
 
-    if let Some((_, info_path, trash_file, orig_path)) = matches.into_iter().next() {
-        let orig_p = PathBuf::from(&orig_path);
-        move_back(&trash_file, &orig_p)?;
-        let _ = fs::remove_file(&info_path);
-        return Ok(orig_path);
+        let full_cmd = script_lines.join(" && ");
+        let ok = if let Some(pw) = crate::backend::fs_ops::get_root_password() {
+            crate::backend::fs_ops::sudo_run_elevated_single("bash", &["-c", &full_cmd], &pw).is_ok()
+        } else {
+            std::process::Command::new("pkexec")
+                .args(["bash", "-c", &full_cmd])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+
+        if !ok {
+            return Err("Geri yükleme için Root (Sudo) yetkisi onaylanamadı".to_string());
+        }
+
+        for item in needs_elevation {
+            if let Some(ref ifile) = item.info_file {
+                let _ = fs::remove_file(ifile);
+            }
+            success_restored.push(item.orig_str);
+        }
     }
 
-    Err(format!("Çöp kutusunda eşleşen kayıt bulunamadı: {}", target))
+    Ok(success_restored)
 }
 
 pub fn empty_trash() -> Result<(), String> {
