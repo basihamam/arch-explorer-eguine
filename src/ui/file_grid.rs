@@ -772,10 +772,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         if drag_delta.length() > 4.0 {
                             let already_active = ui.ctx().data_mut(|d| d.get_temp::<Pos2>(rb_id).is_some());
                             if !already_active {
-                                let start_rel_y = origin.y - content_top_y;
                                 ui.ctx().data_mut(|d| {
                                     d.insert_temp(rb_id, origin);
-                                    d.insert_temp(rb_rel_y_id, start_rel_y);
                                     d.insert_temp(rb_init_sel_id, state.selection.selected.clone());
                                 });
                             }
@@ -792,11 +790,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 state.is_rubber_banding = false;
             }
 
-            let mut active_rb_rect: Option<Rect> = None;
-            if let (Some(start), Some(start_rel_y)) = (
-                ui.ctx().data_mut(|d| d.get_temp::<Pos2>(rb_id)),
-                ui.ctx().data_mut(|d| d.get_temp::<f32>(rb_rel_y_id)),
-            ) {
+            let mut active_rb_screen_rect: Option<Rect> = None;
+            if let Some(start) = ui.ctx().data_mut(|d| d.get_temp::<Pos2>(rb_id)) {
                 if let Some(cur) = ptr_pos {
                     state.is_rubber_banding = true;
 
@@ -813,13 +808,11 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         ui.ctx().request_repaint();
                     }
 
-                    // Content-anchored start Y position
-                    let current_start_y = content_top_y + start_rel_y;
-                    let effective_start = Pos2::new(start.x, current_start_y);
-                    let rb_rect = Rect::from_two_pos(effective_start, cur);
-                    active_rb_rect = Some(rb_rect);
+                    // Pure Screen-space rubber-band box matching exactly what the user sees & drags
+                    let rb_screen = Rect::from_two_pos(start, cur);
+                    active_rb_screen_rect = Some(rb_screen);
 
-                    let visible_box = rb_rect.intersect(bg_rect);
+                    let visible_box = rb_screen.intersect(bg_rect);
                     if visible_box.is_positive() {
                         let theme_accent = c.accent();
                         let rb_fill = Color32::from_rgba_unmultiplied(
@@ -1260,8 +1253,8 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 ui.add_space(bottom_spacer);
             }
 
-            // Update rubber band selection using content-relative Y positions across infinite scroll depth
-            if let Some(rb_rect) = active_rb_rect {
+            // Update rubber band selection using direct screen-space coordinates matching the visual box exactly
+            if let Some(rb_rect) = active_rb_screen_rect {
                 let ctrl_active = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
                 let shift_active = ui.input(|i| i.modifiers.shift);
                 let initial_sel: std::collections::HashSet<String> = ui.ctx().data_mut(|d| d.get_temp(rb_init_sel_id)).unwrap_or_default();
@@ -1272,21 +1265,14 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     std::collections::HashSet::new()
                 };
 
-                if row_h > 0.0 && total_count > 0 {
-                    let rb_content_min_y = (rb_rect.min.y - content_top_y).max(0.0);
-                    let rb_content_max_y = (rb_rect.max.y - content_top_y).max(0.0);
-
-                    let rb_start_idx = ((rb_content_min_y / row_h).floor() as usize).min(total_count);
-                    let rb_end_idx = (((rb_content_max_y / row_h).ceil() as usize) + 1).min(total_count);
-
-                    for i in rb_start_idx..rb_end_idx {
-                        if i < entries.len() {
-                            let entry_y = content_top_y + i as f32 * row_h;
-                            let entry_row = Rect::from_min_size(Pos2::new(bg_rect.min.x, entry_y), Vec2::new(bg_rect.width(), row_h));
-                            if rb_rect.intersects(entry_row) {
-                                next_sel.insert(entries[i].path.clone());
-                            }
-                        }
+                for (idx, entry) in rendered_entries.iter().enumerate() {
+                    let actual_idx = start_idx + idx;
+                    let row_rect = Rect::from_min_size(
+                        Pos2::new(bg_rect.min.x, content_top_y + (actual_idx as f32 * row_h)),
+                        Vec2::new(bg_rect.width(), row_h),
+                    );
+                    if rb_rect.intersects(row_rect) {
+                        next_sel.insert(entry.path.clone());
                     }
                 }
                 state.selection.selected = next_sel;

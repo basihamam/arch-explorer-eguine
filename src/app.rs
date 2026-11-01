@@ -627,7 +627,20 @@ impl ArchExplorer {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 BackendMsg::DirectoryLoaded(listing) => {
-                    self.state.pending_listing = Some(listing);
+                    // Sekme sıçramasını (tab jumping) önleme:
+                    // Yüklenen dizin sonucu ancak şu anki aktif gezinme yoluna veya aktif sekmenin yoluna aitse uygulanır!
+                    let cur_norm = self.state.nav.current_path.trim_end_matches('/');
+                    let list_norm = listing.path.trim_end_matches('/');
+                    let matches_current = cur_norm == list_norm 
+                        || (self.state.nav.current_path.starts_with("trash:") && (listing.path.contains("/.local/share/Trash") || listing.path.starts_with("trash:")))
+                        || match (std::fs::canonicalize(&self.state.nav.current_path), std::fs::canonicalize(&listing.path)) {
+                            (Ok(c1), Ok(c2)) => c1 == c2,
+                            _ => false,
+                        };
+
+                    if matches_current {
+                        self.state.pending_listing = Some(listing);
+                    }
                 }
                 BackendMsg::DirectoryError(e) => {
                     self.state.dir.is_loading = false;

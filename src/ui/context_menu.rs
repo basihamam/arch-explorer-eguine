@@ -491,9 +491,17 @@ pub fn render(
     if ow_hovered {
         if let Some(ref entry) = cm.target.clone() {
             let path = entry.path.clone();
-            // Hızlı app listesini al (cache edilmemiş — küçük dosyalar için OK)
-            let (default_app, recommended) =
-                crate::backend::open_with::get_quick_apps(&path);
+            let cache_id = egui::Id::new("ctx_quick_apps_cache");
+            let cached: Option<(String, Option<crate::backend::open_with::AppEntry>, Vec<crate::backend::open_with::AppEntry>)> =
+                ctx.data_mut(|d| d.get_temp(cache_id));
+            let (default_app, recommended) = match cached {
+                Some((ref p, ref d, ref r)) if p == &path => (d.clone(), r.clone()),
+                _ => {
+                    let (d, r) = crate::backend::open_with::get_quick_apps(&path);
+                    ctx.data_mut(|d_store| d_store.insert_temp(cache_id, (path.clone(), d.clone(), r.clone())));
+                    (d, r)
+                }
+            };
 
             let sub_w = 210.0_f32;
             let sub_x = if x + menu_w + sub_w + 8.0 > screen.right() {

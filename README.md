@@ -1,28 +1,29 @@
-# ◈ Arch Explorer (v2 Native)
+# ◈ Arch Explorer (egui v2 Native)
 
 <p align="center">
-  <img src="docs/screenshots/arch_explorer_multiselection_transparent.gif" alt="Arch Explorer Transparent Demo" width="90%">
+  <img src="docs/screenshots/arch_explorer_multiselection_transparent.gif" alt="Arch Explorer Transparent Multiselection Demo" width="92%">
 </p>
 
 <p align="center">
-  <strong>Blazing fast, ultra-lightweight, hardware-accelerated native file manager for Arch Linux & Wayland.</strong><br>
-  Built with Pure Native Rust + egui + wgpu · Zero WebKit bloat · ~45MB RAM · True Desktop Glassmorphism
+  <strong>Blazing fast, featherweight, hardware-accelerated pure native file manager for Arch Linux & Wayland.</strong><br>
+  Built with 100% Native Rust + egui + wgpu · Zero WebKit/Chromium/Tauri overhead · ~40MB RAM · True Desktop Glassmorphism
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Linux%20%2F%20Wayland%20%2F%20X11-blue?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/badge/Engine-egui%20%2B%20wgpu-purple?style=flat-square" alt="Engine">
-  <img src="https://img.shields.io/badge/RAM-~45MB-brightgreen?style=flat-square" alt="RAM">
-  <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/UI%20Engine-Pure%20egui%20(wgpu)-purple?style=flat-square" alt="Engine">
+  <img src="https://img.shields.io/badge/Memory-~40MB%20RAM-brightgreen?style=flat-square" alt="RAM">
+  <img src="https://img.shields.io/badge/Release-v0.2.0--2-orange?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/License-MIT-teal?style=flat-square" alt="License">
 </p>
 
 ---
 
 ## ⚡ Direct Download & Instant Run (No `cargo build` Needed!)
 
-You don't need to install Rust or wait for compilation! A standalone precompiled binary and native Arch Linux package are included right in the repository:
+You don't need to install Rust or compile anything from source! Prebuilt binaries and native packages are maintained directly in this repository:
 
-### 1. Instant Run (No Installation Required):
+### 1. Instant Run (Standalone Binary):
 ```bash
 git clone https://github.com/basihamam/arch-explorer-eguine.git
 cd arch-explorer-eguine
@@ -43,9 +44,9 @@ yay -S arch-explorer-bin
 
 ---
 
-## 🚀 Building From Source (For Developers)
+## 🚀 Building From Source (Developers)
 
-If you prefer building from source, all dependencies and patched Wayland modules are self-contained in `crates/winit`:
+If you wish to compile locally, all Wayland extensions and our custom Wayland DnD engine are self-contained in `crates/winit`:
 
 ### Prerequisites (Arch Linux):
 ```bash
@@ -58,52 +59,64 @@ git clone https://github.com/basihamam/arch-explorer-eguine.git
 cd arch-explorer-eguine
 cargo run --release
 ```
-*The optimized binary will be produced at `target/release/arch-explorer`.*
+*The resulting binary is generated at `target/release/arch-explorer`.*
 
 ---
 
-## ✨ Features at a Glance
+## ✨ Key Features & Architecture
 
-- **⚡ Blazing Fast & Featherweight:** Consumes only ~40–50 MB RAM with instant startup (<50ms). Pure GPU rendering via `wgpu`.
-- **🎯 Native Wayland Drag & Drop (`wl_data_device`):**
-  - Outgoing drag renders a 64×64 neon-bordered thumbnail/icon surface directly attached to the Wayland cursor.
-  - Seamless two-way drag and drop with **Nemo, Nautilus, Firefox, Chromium, Discord, and desktop workspaces**.
-  - **Self-drop isolation:** Cancelling or releasing files back into the same window never triggers false "external drop" notifications or redundant file copies.
-  - **Clipboard isolation:** Drag-and-drop does not overwrite your system clipboard (<kbd>Ctrl+C</kbd> / <kbd>Ctrl+X</kbd> remain intact).
-- **🪟 True Desktop Transparency & Glassmorphism:** Real alpha-channel compositor pass-through. Looks stunning with Hyprland and Sway blur filters.
-- **📁 Dual-Pane & Multi-Tab System:** Split-screen navigation with independent browsing contexts and persistent sessions (`~/.config/arch-explorer/session.json`).
-- **💻 Integrated Terminal Drawer:** Toggleable terminal drawer at the bottom of the window for rapid CLI tasks in the current directory.
-- **👁 Rich File Previews:** Media inspection with syntax highlighting for code/text, image viewer, and integrated video playback.
-- **📱 ADB Device Manager:** Direct browsing and file transfers with connected Android devices over USB / Wi-Fi.
-- **🎨 AEX Live Theming:** Fully modular color palettes, border radius controls, and real-time JSON/AEX theme switching.
+- **⚡ Blazing Fast & Ultra Lightweight:** Consumes only ~40–50 MB RAM with instantaneous startup (<50ms). Pure hardware GPU rendering via `wgpu`.
+- **🎯 Full Native Wayland Drag & Drop (`wl_data_device`):**
+  - Outgoing drag attaches a 64×64 neon-bordered thumbnail/icon surface directly to the Wayland cursor.
+  - Seamless bidirectional drag-and-drop between **Arch Explorer, Nemo, Nautilus, Firefox, Discord, and workspaces**.
+  - **Self-drop isolation:** Dropping files back into the same application window never triggers redundant file transfers or clipboard pollution.
+  - **System Clipboard Preservation:** Drag & drop operations never tamper with your <kbd>Ctrl+C</kbd> / <kbd>Ctrl+X</kbd> clipboard.
+- **🪟 True Desktop Transparency & Glassmorphism:**
+  - Real alpha-channel compositor pass-through.
+  - Full compatibility with Hyprland & Sway blur shaders.
+- **📁 Dual-Pane & Multi-Tab Workspace:**
+  - Tab caching prevents redundant re-scans and stops tab hopping.
+  - Split-view (dual-pane) mode with visual parity across active and inactive panels.
+- **💻 Integrated Terminal Drawer:**
+  - Toggleable embedded terminal synced with current working directory.
+- **👁 Rich File Preview Panel:**
+  - Dynamic responsive scroll area for code with syntax highlighting, hex dump, image viewing, and video playback.
+- **📱 Android ADB Device Explorer:**
+  - Inspect, transfer, and manage files on connected Android devices over USB or Wi-Fi.
+- **🗑 Full Trash Management & Ctrl+Z Undo:**
+  - Freedesktop trash compliance with instant undo support.
 
 ---
 
 ## 📸 Visual Showcase
 
-### Glassmorphism & Desktop Transparency
-Arch Explorer lets your wallpaper and system theme shine through with hardware-accelerated blur and customizable opacity sliders.
+<p align="center">
+  <img src="docs/screenshots/arch_explorer_transparent_demo.gif" alt="Arch Explorer Desktop Flow Demo" width="90%">
+</p>
+
+### 1. Main Transparent Workspace & Dual Pane
+Arch Explorer blends with your desktop wallpaper and system themes with full hardware-accelerated transparency.
 
 <p align="center">
   <img src="docs/screenshots/01_arch_explorer_main_transparent.png" alt="Main Window Transparency" width="88%">
 </p>
 
-### Settings & Appearance Customization
-Live theme presets, accent color picker, interface blur (0–40px), and background opacity controls.
+### 2. Live Appearance & Theme Settings
+Customize accent colors, window blur (0–40px), card transparency, and UI scaling on the fly.
 
 <p align="center">
   <img src="docs/screenshots/02_settings_appearance_transparent.png" alt="Settings & Glass Blur" width="88%">
 </p>
 
-### Layout & Folder Preview Controls
-Configurable preview modes (Always, Automatic, Manual, Custom) and one-click toggle for Folder Previews.
+### 3. Folder Previews & Dynamic Layout
+Interactive preview modes (Always, Automatic, Manual, Custom) with instant metadata inspection.
 
 <p align="center">
   <img src="docs/screenshots/04_settings_layout_folder_preview.png" alt="Layout & Folder Preview Controls" width="88%">
 </p>
 
-### Clean Context Menu & Trash Management
-Quick actions, archive extraction, checksum verification, open-with manager, and trash restore.
+### 4. Transparent Context Menu & Quick Actions
+Context menus featuring fast Open With recommendations, Archive operations, and Trash management.
 
 <p align="center">
   <img src="docs/screenshots/05_context_menu_transparent.png" alt="Transparent Context Menu" width="88%">
@@ -111,9 +124,9 @@ Quick actions, archive extraction, checksum verification, open-with manager, and
 
 ---
 
-## 🪟 Hyprland Blur & Transparency Setup
+## 🪟 Hyprland Blur & Transparency Configuration
 
-To enable true glassmorphic blur in Hyprland, add these window rules to your `~/.config/hypr/hyprland.conf`:
+Add the following window rules to your `~/.config/hypr/hyprland.conf` for blur and rounding:
 
 ```ini
 windowrulev2 = opacity 0.88 0.82,       class:^(arch-explorer)$
@@ -125,7 +138,7 @@ windowrulev2 = animation popin 80%,     class:^(arch-explorer)$
 ---
 
 ## 🤝 Upstream Contribution
-The custom Wayland data device backport patch implemented for `winit 0.30.13` is available in [`patches/winit-0.30.13-wayland-dnd.patch`](patches/winit-0.30.13-wayland-dnd.patch) for upstream `rust-windowing/winit` reference.
+Our custom Wayland data device backport patch implemented for `winit 0.30.13` is documented in [`patches/winit-0.30.13-wayland-dnd.patch`](patches/winit-0.30.13-wayland-dnd.patch) for upstream `rust-windowing/winit` reference.
 
 ---
 

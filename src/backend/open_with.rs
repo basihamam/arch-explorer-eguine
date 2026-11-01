@@ -85,18 +85,43 @@ fn build_mime_index() -> HashMap<String, Vec<AppEntry>> {
     index
 }
 
+// ── Cached MIME & Desktop Application Registry ─────────────────────────────────
+static MIME_INDEX_CACHE: std::sync::RwLock<Option<HashMap<String, Vec<AppEntry>>>> = std::sync::RwLock::new(None);
+static ICON_PATH_CACHE: std::sync::RwLock<Option<HashMap<String, Option<PathBuf>>>> = std::sync::RwLock::new(None);
+
+fn get_cached_mime_index() -> HashMap<String, Vec<AppEntry>> {
+    if let Ok(guard) = MIME_INDEX_CACHE.read() {
+        if let Some(ref map) = *guard {
+            return map.clone();
+        }
+    }
+    let map = build_mime_index();
+    if let Ok(mut guard) = MIME_INDEX_CACHE.write() {
+        *guard = Some(map.clone());
+    }
+    map
+}
+
 pub fn get_open_with_info(path: String) -> Result<OpenWithInfo, String> {
-    let out = Command::new("xdg-mime").args(["query", "filetype", &path]).output()
-        .map_err(|e| e.to_string())?;
-    let mime = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if mime.is_empty() { return Err("mime tespit edilemedi".into()); }
-    let index = build_mime_index();
+    // 1. Önce dosya uzantısından anında tespit et (process spawn etmeden 0ms)
+    let p = Path::new(&path);
+    let mime = mime_guess::from_path(p)
+        .first()
+        .map(|m| m.to_string())
+        .or_else(|| {
+            // Sadece uzantısız dosyalarda xdg-mime fallback'i çalıştır
+            let out = Command::new("xdg-mime").args(["query", "filetype", &path]).output().ok()?;
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let index = get_cached_mime_index();
     let apps = index.get(&mime).cloned().unwrap_or_default();
-    let def_out = Command::new("xdg-mime").args(["query", "default", &mime]).output().ok();
-    let default_app = def_out.and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
-    });
+
+    // Default app'i bul
+    let default_app = apps.first().map(|a| a.id.clone());
+
     Ok(OpenWithInfo { mime_type: mime, default_app, apps })
 }
 
@@ -188,9 +213,24 @@ pub fn open_with_exec(file_path: String, exec: String) -> Result<(), String> {
 /// İkon adından gerçek PNG dosyasını bul
 pub fn find_app_icon(icon_name: &str) -> Option<std::path::PathBuf> {
     if icon_name.is_empty() { return None; }
+    // Cache kontrolü
+    if let Ok(guard) = ICON_PATH_CACHE.read() {
+        if let Some(ref cache) = *guard {
+            if let Some(res) = cache.get(icon_name) {
+                return res.clone();
+            }
+        }
+    }
+
     // Mutlak path
     let p = std::path::Path::new(icon_name);
-    if p.is_absolute() && p.exists() { return Some(p.to_path_buf()); }
+    if p.is_absolute() && p.exists() {
+        let res = Some(p.to_path_buf());
+        if let Ok(mut guard) = ICON_PATH_CACHE.write() {
+            guard.get_or_insert_with(HashMap::new).insert(icon_name.to_string(), res.clone());
+        }
+        return res;
+    }
 
     let home = dirs::home_dir().unwrap_or_default();
     let sizes = ["48x48", "32x32", "64x64", "128x128", "256x256", "scalable"];
@@ -205,11 +245,15 @@ pub fn find_app_icon(icon_name: &str) -> Option<std::path::PathBuf> {
         home.join(".icons"),
     ];
 
-    for base in &search_dirs {
+    let mut found = None;
+    'search: for base in &search_dirs {
         // pixmaps — doğrudan
         for ext in &exts {
             let p = base.join(format!("{}.{}", icon_name, ext));
-            if p.exists() { return Some(p); }
+            if p.exists() {
+                found = Some(p);
+                break 'search;
+            }
         }
         // theme/size/apps
         for theme in &themes {
@@ -217,12 +261,19 @@ pub fn find_app_icon(icon_name: &str) -> Option<std::path::PathBuf> {
                 for ext in &exts {
                     let p = base.join(theme).join(size).join("apps")
                                 .join(format!("{}.{}", icon_name, ext));
-                    if p.exists() { return Some(p); }
+                    if p.exists() {
+                        found = Some(p);
+                        break 'search;
+                    }
                 }
             }
         }
     }
-    None
+
+    if let Ok(mut guard) = ICON_PATH_CACHE.write() {
+        guard.get_or_insert_with(HashMap::new).insert(icon_name.to_string(), found.clone());
+    }
+    found
 }
 
 /// Hızlı open-with için: default + ilk 3 recommended

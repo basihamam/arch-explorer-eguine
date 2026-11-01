@@ -494,7 +494,7 @@ impl DirectoryState {
     pub fn sort_slice(entries: &mut [FileEntry], sort_by: SortBy, sort_asc: bool) {
         match sort_by {
             SortBy::Name => {
-                entries.sort_by(|a, b| {
+                entries.sort_unstable_by(|a, b| {
                     match (a.is_dir, b.is_dir) {
                         (true, false) => std::cmp::Ordering::Less,
                         (false, true) => std::cmp::Ordering::Greater,
@@ -503,7 +503,7 @@ impl DirectoryState {
                 });
             }
             SortBy::Size => {
-                entries.sort_by(|a, b| {
+                entries.sort_unstable_by(|a, b| {
                     match (a.is_dir, b.is_dir) {
                         (true, false) => std::cmp::Ordering::Less,
                         (false, true) => std::cmp::Ordering::Greater,
@@ -512,13 +512,13 @@ impl DirectoryState {
                 });
             }
             SortBy::Modified => {
-                entries.sort_by(|a, b| a.modified.cmp(&b.modified));
+                entries.sort_unstable_by(|a, b| a.modified.cmp(&b.modified));
             }
             SortBy::Permissions => {
-                entries.sort_by(|a, b| a.permissions.cmp(&b.permissions));
+                entries.sort_unstable_by(|a, b| a.permissions.cmp(&b.permissions));
             }
             SortBy::Type => {
-                entries.sort_by(|a, b| {
+                entries.sort_unstable_by(|a, b| {
                     match (a.is_dir, b.is_dir) {
                         (true, false) => std::cmp::Ordering::Less,
                         (false, true) => std::cmp::Ordering::Greater,
@@ -1618,6 +1618,7 @@ impl AppState {
             tab.history_idx = self.nav.history_idx;
             tab.selection   = self.selection.selected.clone();
             tab.search_query = self.search.query.clone();
+            tab.entries     = Some(self.dir.entries.clone());
             tab.update_label();
         }
 
@@ -1625,6 +1626,7 @@ impl AppState {
         self.tabs.switch_to(idx);
 
         // ── Yeni tab'ın state'ini restore et ─────────────────────────────
+        let mut had_cached_entries = false;
         {
             let tab = self.tabs.active();
             self.nav.current_path = tab.path.clone();
@@ -1633,9 +1635,17 @@ impl AppState {
             self.selection.selected = tab.selection.clone();
             self.search.query     = tab.search_query.clone();
             self.search.active    = !tab.search_query.is_empty();
+
+            if let Some(ref cached) = tab.entries {
+                self.dir.entries = cached.clone();
+                self.dir.is_loading = false;
+                had_cached_entries = true;
+            }
         }
 
-        self.needs_reload = true;
+        if !had_cached_entries {
+            self.needs_reload = true;
+        }
         self.sync_terminal_cwd();
     }
 
@@ -1648,6 +1658,7 @@ impl AppState {
             tab.history_idx = self.nav.history_idx;
             tab.selection   = self.selection.selected.clone();
             tab.search_query = self.search.query.clone();
+            tab.entries     = Some(self.dir.entries.clone());
             tab.update_label();
         }
 
@@ -2350,6 +2361,7 @@ pub struct TabEntry {
     pub selection:   HashSet<String>,
     pub search_query: String,
     pub label:       String,  // klasör adı
+    pub entries:     Option<std::sync::Arc<Vec<FileEntry>>>,
 }
 
 impl TabEntry {
@@ -2359,7 +2371,7 @@ impl TabEntry {
             .unwrap_or_else(|| path.clone());
         let mut history = VecDeque::new();
         history.push_back(path.clone());
-        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label }
+        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None }
     }
 
     pub fn update_label(&mut self) {

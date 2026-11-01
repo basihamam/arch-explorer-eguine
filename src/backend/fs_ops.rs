@@ -286,8 +286,8 @@ pub fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListin
         .filter(|e| show_hidden || !e.hidden)
         .collect();
 
-    // Klasörler önce, sonra alfabetik
-    entries.sort_by(|a, b| {
+    // Klasörler önce, sonra alfabetik (30.000 dosya için optimize edilmiş hızlı sort_unstable_by)
+    entries.sort_unstable_by(|a, b| {
         match (a.is_dir, b.is_dir) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
