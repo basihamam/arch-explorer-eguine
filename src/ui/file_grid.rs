@@ -295,7 +295,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             } else {
                 let total_rows = (total_count + cols - 1) / cols;
                 let item_w = item_size;
-                let item_h = (item_size * 1.18).round();
+                let item_h = (item_size * 1.28).round();
                 let row_h = item_h + gap;
 
                 let view_top = (bg_rect.min.y - content_top_y).max(0.0);
@@ -412,9 +412,10 @@ fn masonry_grid_item(
     let badge_font = (item_w * 0.080).clamp(8.0, 11.0);
 
     let chars_per_line = ((item_w - 8.0) / (name_font * 0.52)).max(8.0) as usize;
-    let (name_line1, name_line2) = wrap_name_two_lines(&entry.name, chars_per_line);
+    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 3);
 
-    let label_h = if name_line2.is_some() { name_font * 2.2 + 4.0 } else { name_font + 4.0 };
+    let line_spacing = name_font * 1.20;
+    let label_h = name_lines.len() as f32 * line_spacing + 5.0;
     let has_badge = entry.is_dir || entry.size > 0;
     let badge_h = if has_badge { badge_font + 6.0 } else { 0.0 };
 
@@ -499,33 +500,20 @@ fn masonry_grid_item(
             );
         }
 
-        let name_y = rect.min.y + thumb_h + 8.0;
+        let name_center_y = rect.min.y + thumb_h + 8.0 + label_h / 2.0;
         let text_color = if is_sel {
             c.accent()
         } else {
             Color32::from_rgba_unmultiplied(c.text_primary().r(), c.text_primary().g(), c.text_primary().b(), (255.0 * opacity) as u8)
         };
 
-        if let Some(ref l2) = name_line2 {
+        let start_y = name_center_y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
+        for (li, line) in name_lines.iter().enumerate() {
+            let ly = start_y + li as f32 * line_spacing;
             ui.painter().text(
-                Pos2::new(rect.center().x, name_y + name_font * 0.4),
+                Pos2::new(rect.center().x, ly),
                 Align2::CENTER_CENTER,
-                &name_line1,
-                FontId::new(name_font, FontFamily::Proportional),
-                text_color,
-            );
-            ui.painter().text(
-                Pos2::new(rect.center().x, name_y + name_font * 1.5),
-                Align2::CENTER_CENTER,
-                l2,
-                FontId::new(name_font, FontFamily::Proportional),
-                text_color,
-            );
-        } else {
-            ui.painter().text(
-                Pos2::new(rect.center().x, name_y + label_h * 0.5),
-                Align2::CENTER_CENTER,
-                &name_line1,
+                line,
                 FontId::new(name_font, FontFamily::Proportional),
                 text_color,
             );
@@ -605,40 +593,34 @@ fn grid_item(
         Sense::click_and_drag(),
     );
 
-    // Visual calculations: Proportional layout coordinates (Nemo & Windows 10 style)
-    // Sıkı ve birleşik tasarım: Thumbnail ile dosya adı arasındaki gereksiz boşluğu birleştir
-    let visual_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.40);
-    let thumb_box_sz = (item_w * 0.52).min(item_h * 0.48).round();
-    let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::splat(thumb_box_sz));
+    // Visual calculations: Proportional layout coordinates (Nemo style)
+    let icon_area_h = item_h * 0.52;
+    let visual_center = rect.min + Vec2::new(item_w / 2.0, icon_area_h * 0.56);
+    let max_thumb_w = (item_w - 12.0).max(32.0);
+    let max_thumb_h = (icon_area_h - 6.0).max(32.0);
+    let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::new(max_thumb_w, max_thumb_h));
 
-    let has_badge = item_h >= 65.0 && (entry.is_dir || entry.size > 0);
-    let name_center_y = if has_badge { item_h * 0.76 } else { item_h * 0.78 };
-    let name_rect_center = rect.min + Vec2::new(item_w / 2.0, name_center_y);
+    let has_badge = item_h >= 68.0 && (entry.is_dir || entry.size > 0);
+    let icon_font  = (item_w * 0.38).clamp(20.0, 56.0);
+    let name_font  = (item_w * 0.108).clamp(9.5, 13.0);
+    let badge_font = (item_w * 0.082).clamp(8.0, 10.5);
 
-    let icon_font  = (item_w * 0.36).clamp(16.0, 58.0);
-    let name_font  = (item_w * 0.115).clamp(9.5, 13.5);
-    let badge_font = (item_w * 0.085).clamp(8.0, 11.0);
+    let chars_per_line = ((item_w - 8.0) / (name_font * 0.52)).max(8.0) as usize;
+    // Nemo-style multi-line name wrapping (up to 3 lines)
+    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 3);
 
-    let chars_per_line = ((item_w - 6.0) / (name_font * 0.52)).max(8.0) as usize;
-    let (name_line1, name_line2) = wrap_name_two_lines(&entry.name, chars_per_line);
+    let max_line_len = name_lines.iter().map(|s| s.chars().count()).max().unwrap_or(1);
+    let approx_label_w = (max_line_len as f32 * name_font * 0.56 + 10.0).clamp(24.0, item_w - 4.0);
+    let line_spacing = name_font * 1.20;
+    let label_pill_h = (name_lines.len() as f32 * line_spacing + 5.0).max(name_font + 6.0);
 
-    let max_line_len = name_line1.chars().count().max(name_line2.as_ref().map(|s| s.chars().count()).unwrap_or(0));
-    let approx_label_w = (max_line_len as f32 * name_font * 0.55 + 8.0).clamp(20.0, item_w - 4.0);
-    let label_pill_h = if name_line2.is_some() { name_font * 2.2 + 4.0 } else { name_font + 6.0 };
+    let label_top_y = rect.min.y + icon_area_h + 3.0;
+    let name_rect_center = Pos2::new(rect.center().x, label_top_y + label_pill_h / 2.0);
     let label_pill_rect = Rect::from_center_size(name_rect_center, Vec2::new(approx_label_w, label_pill_h));
 
-    // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana birebir oturan hitbox
-    // Kullanıcının istediği gibi sadece görünen thumbnail/ikon alanı ve yazıyla birleşen sıkı alan
-    let icon_visual_sz = icon_font * 1.1;
-    let visual_icon_rect = Rect::from_center_size(visual_center, Vec2::splat(icon_visual_sz));
-    let top_hit_rect = if entry.is_dir {
-        thumb_box_rect.shrink2(Vec2::new(thumb_box_sz * 0.08, thumb_box_sz * 0.12))
-    } else {
-        visual_icon_rect
-    };
-
+    // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana oturan hitbox
     let hit_area = GridHitArea {
-        thumb_hit: top_hit_rect.expand(2.0),
+        thumb_hit: thumb_box_rect.expand(2.0),
         label_hit: label_pill_rect.expand(2.0),
     };
 
@@ -779,28 +761,13 @@ fn grid_item(
                 )
             };
 
-            if let Some(ref l2) = name_line2 {
-                let y1 = name_rect_center.y - name_font * 0.55;
-                let y2 = name_rect_center.y + name_font * 0.55;
+            let start_y = name_rect_center.y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
+            for (li, line) in name_lines.iter().enumerate() {
+                let ly = start_y + li as f32 * line_spacing;
                 ui.painter().text(
-                    Pos2::new(name_rect_center.x, y1),
+                    Pos2::new(name_rect_center.x, ly),
                     Align2::CENTER_CENTER,
-                    &name_line1,
-                    FontId::new(name_font, FontFamily::Proportional),
-                    text_color,
-                );
-                ui.painter().text(
-                    Pos2::new(name_rect_center.x, y2),
-                    Align2::CENTER_CENTER,
-                    l2,
-                    FontId::new(name_font, FontFamily::Proportional),
-                    text_color,
-                );
-            } else {
-                ui.painter().text(
-                    name_rect_center,
-                    Align2::CENTER_CENTER,
-                    &name_line1,
+                    line,
                     FontId::new(name_font, FontFamily::Proportional),
                     text_color,
                 );
@@ -824,7 +791,8 @@ fn grid_item(
                 human_size(entry.size)
             };
 
-            let badge_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.88);
+            let badge_y = (label_pill_rect.max.y + badge_font * 0.7 + 3.0).min(rect.max.y - 4.0);
+            let badge_center = Pos2::new(rect.center().x, badge_y);
             ui.painter().text(
                 badge_center,
                 Align2::CENTER_CENTER,
@@ -2134,6 +2102,63 @@ fn icon_color_for(t: &AexTheme, entry: &FileEntry) -> Color32 {
     }
 }
 
+pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
+    let char_count = name.chars().count();
+    let max_lines = max_lines.max(1);
+    if char_count <= chars_per_line {
+        return vec![name.to_string()];
+    }
+
+    let chars: Vec<char> = name.chars().collect();
+    let mut lines = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < chars.len() && lines.len() < max_lines {
+        let remaining = chars.len() - cursor;
+        let is_last_line = lines.len() + 1 == max_lines;
+
+        if remaining <= chars_per_line {
+            lines.push(chars[cursor..].iter().collect());
+            break;
+        }
+
+        if is_last_line {
+            // Son satır: Nemo gibi '…' ile sınırlandır
+            let take_len = chars_per_line.saturating_sub(1).min(remaining);
+            let s: String = chars[cursor..cursor + take_len].iter().collect();
+            lines.push(format!("{}…", s));
+            break;
+        }
+
+        let lookahead = chars_per_line.min(remaining);
+        let min_break = (chars_per_line / 3).max(2).min(lookahead);
+        let mut split_at = lookahead;
+
+        for i in (min_break..=lookahead).rev() {
+            let ch = chars[cursor + i - 1];
+            if ch == ' ' || ch == '-' || ch == '_' || ch == '.' {
+                split_at = i;
+                break;
+            }
+        }
+
+        let line_chars = &chars[cursor..cursor + split_at];
+        let line_str: String = line_chars.iter().collect();
+        lines.push(line_str.trim_end().to_string());
+
+        cursor += split_at;
+        while cursor < chars.len() && chars[cursor] == ' ' {
+            cursor += 1;
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(name.to_string());
+    }
+
+    lines
+}
+
 pub fn wrap_name_two_lines(name: &str, chars_per_line: usize) -> (String, Option<String>) {
     let char_count = name.chars().count();
     if char_count <= chars_per_line {
@@ -2377,9 +2402,9 @@ fn draw_grid_thumbnail(
 
     if !is_media || entry.is_dir { return false; }
 
+    let max_thumb_w = (item_w - 12.0).max(32.0);
+    let max_thumb_h = (item_h * 0.50).max(32.0);
     let thumb_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.35);
-    let sz = (item_w * 0.50).min(item_h * 0.46).round();
-    let tr = Rect::from_center_size(thumb_center, Vec2::splat(sz));
     let tint = Color32::from_rgba_unmultiplied(255, 255, 255,
         if is_cut { 102 } else { (255.0 * opacity) as u8 });
 
@@ -2408,8 +2433,18 @@ fn draw_grid_thumbnail(
                 acc += d; if elapsed < acc { fidx = i; break; } fidx = i;
             }
             let h = &flist[fidx];
+            let tex_size = h.size_vec2();
+            let aspect = if tex_size.y > 0.0 { (tex_size.x / tex_size.y).clamp(0.2, 5.0) } else { 1.0 };
+            let (tw, th) = if aspect >= (max_thumb_w / max_thumb_h) {
+                (max_thumb_w, (max_thumb_w / aspect).round())
+            } else {
+                (((max_thumb_h * aspect).round()).min(max_thumb_w), max_thumb_h)
+            };
+            let tr = Rect::from_center_size(thumb_center, Vec2::new(tw, th));
+            ui.painter().rect_filled(tr, Rounding::same(4.0), Color32::from_black_alpha(25));
             ui.painter().image(h.id(), tr,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
+            ui.painter().rect_stroke(tr, Rounding::same(4.0), Stroke::new(1.0_f32, Color32::from_white_alpha(35)));
             ui.ctx().request_repaint();
             return true;
         } else {
@@ -2469,8 +2504,18 @@ fn draw_grid_thumbnail(
         ui.ctx().data_mut(|d| d.get_temp(thumb_id));
 
     if let Some(ref h) = handle {
+        let tex_size = h.size_vec2();
+        let aspect = if tex_size.y > 0.0 { (tex_size.x / tex_size.y).clamp(0.2, 5.0) } else { 1.0 };
+        let (tw, th) = if aspect >= (max_thumb_w / max_thumb_h) {
+            (max_thumb_w, (max_thumb_w / aspect).round())
+        } else {
+            (((max_thumb_h * aspect).round()).min(max_thumb_w), max_thumb_h)
+        };
+        let tr = Rect::from_center_size(thumb_center, Vec2::new(tw, th));
+        ui.painter().rect_filled(tr, Rounding::same(4.0), Color32::from_black_alpha(25));
         ui.painter().image(h.id(), tr,
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
+        ui.painter().rect_stroke(tr, Rounding::same(4.0), Stroke::new(1.0_f32, Color32::from_white_alpha(35)));
         return true;
     }
 
@@ -2851,6 +2896,22 @@ mod tests {
         assert!(l2.is_some());
         let l2_str = l2.unwrap();
         assert!(l2_str.ends_with('…'));
+    }
+
+    #[test]
+    fn test_wrap_name_multiline() {
+        // Fits on single line
+        let lines = wrap_name_multiline("photo.png", 14, 3);
+        assert_eq!(lines, vec!["photo.png"]);
+
+        // Wraps onto 2 lines
+        let lines = wrap_name_multiline("my_trip_photos.zip", 12, 3);
+        assert_eq!(lines.len(), 2);
+
+        // Wraps onto 3 lines with ellipsis on last
+        let lines = wrap_name_multiline("very_important_financial_audit_quarter_four.xlsx", 12, 3);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[2].ends_with('…'));
     }
 
     #[test]

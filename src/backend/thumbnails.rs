@@ -1,7 +1,7 @@
 // src/backend/thumbnails.rs
-// Disk-persistent thumbnail cache.
-// 3 kalite seviyesi: Low(64) / Mid(128) / High(256)
-// Crop-to-fill (cover) mod — aspect ratio bozulmuyor, merkez crop.
+// Disk-persistent thumbnail cache (Nemo-style aspect-ratio preserving & Lanczos3 high-fidelity).
+// 3 kalite seviyesi: Low(160) / Mid(320) / High(512)
+// Aspect ratio bozulmuyor, kırpılmıyor, Lanczos3 anti-aliasing ile aşırı büyük resimlerde kalite kaybı önleniyor.
 // Bir kere üretilip ~/.cache/arch-explorer/thumbnails/ altına kaydedilir.
 // Kaynak dosya mtime değişirse stale sayılır ve yeniden üretilir.
 
@@ -13,14 +13,14 @@ pub enum ThumbQuality { Low, Mid, High }
 
 impl ThumbQuality {
     pub fn px(self) -> u32 {
-        match self { Self::Low => 64, Self::Mid => 128, Self::High => 256 }
+        match self { Self::Low => 160, Self::Mid => 320, Self::High => 512 }
     }
     pub fn jpeg_q(self) -> u8 {
-        match self { Self::Low => 70, Self::Mid => 82, Self::High => 90 }
+        match self { Self::Low => 85, Self::Mid => 90, Self::High => 95 }
     }
     pub fn suffix(self) -> &'static str {
         // px boyutunu suffix'e dahil et — kalite değişince eskiler karışmaz
-        match self { Self::Low => "64", Self::Mid => "128", Self::High => "256" }
+        match self { Self::Low => "160", Self::Mid => "320", Self::High => "512" }
     }
 }
 
@@ -99,14 +99,14 @@ fn generate_and_save(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<Ve
     })?;
     let px  = quality.px();
 
-    // Crop-to-fill: önce cover resize, sonra merkez crop
-    let cropped = crop_to_fill(img, px, px);
+    // Nemo-style aspect-ratio preserving Lanczos3 downscaling — aşırı büyük resimlerde kalite kaybını önler
+    let resized = resize_preserving_aspect(img, px);
 
-    // JPEG olarak kaydet (quality 75 — thumbnail için yeterli)
+    // JPEG olarak kaydet
     std::fs::create_dir_all(dst.parent()?).ok()?;
     let mut buf: Vec<u8> = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q());
-    enc.encode_image(&cropped).ok()?;
+    enc.encode_image(&resized).ok()?;
     std::fs::write(dst, &buf).ok();
     Some(buf)
 }
@@ -128,11 +128,11 @@ fn generate_video_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option
         if let Ok(o) = out {
             if o.status.success() && !o.stdout.is_empty() {
                 if let Ok(img) = image::load_from_memory(&o.stdout) {
-                    let cropped = crop_to_fill(img, px, px);
+                    let resized = resize_preserving_aspect(img, px);
                     std::fs::create_dir_all(dst.parent()?).ok()?;
                     let mut buf = Vec::new();
                     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q())
-                        .encode_image(&cropped).ok()?;
+                        .encode_image(&resized).ok()?;
                     std::fs::write(dst, &buf).ok();
                     return Some(buf);
                 }
@@ -158,11 +158,11 @@ fn generate_audio_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option
     if let Ok(o) = out {
         if o.status.success() && !o.stdout.is_empty() {
             if let Ok(img) = image::load_from_memory(&o.stdout) {
-                let cropped = crop_to_fill(img, px, px);
+                let resized = resize_preserving_aspect(img, px);
                 std::fs::create_dir_all(dst.parent()?).ok()?;
                 let mut buf = Vec::new();
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q())
-                    .encode_image(&cropped).ok()?;
+                    .encode_image(&resized).ok()?;
                 std::fs::write(dst, &buf).ok();
                 return Some(buf);
             }
@@ -171,8 +171,21 @@ fn generate_audio_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option
     None
 }
 
+/// Aspect-ratio preserving Lanczos3 downscale (Nemo style) — eliminates quality degradation on large images
+pub fn resize_preserving_aspect(img: image::DynamicImage, max_dim: u32) -> image::DynamicImage {
+    let (iw, ih) = (img.width(), img.height());
+    if iw == 0 || ih == 0 { return img; }
+
+    if iw <= max_dim && ih <= max_dim {
+        return img;
+    }
+
+    // High quality Lanczos3 filter — prevents aliasing and blurriness on DSLR / 4K / 8K images
+    img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3)
+}
+
 /// Cover resize + center crop
-fn crop_to_fill(img: image::DynamicImage, tw: u32, th: u32) -> image::DynamicImage {
+pub fn crop_to_fill(img: image::DynamicImage, tw: u32, th: u32) -> image::DynamicImage {
     let (iw, ih) = (img.width(), img.height());
     if iw == 0 || ih == 0 { return img; }
 
@@ -184,7 +197,7 @@ fn crop_to_fill(img: image::DynamicImage, tw: u32, th: u32) -> image::DynamicIma
     let new_w = (iw as f64 * scale).ceil() as u32;
     let new_h = (ih as f64 * scale).ceil() as u32;
 
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
 
     // Merkez crop
     let cx = (new_w.saturating_sub(tw)) / 2;
@@ -199,12 +212,12 @@ fn generate_gif_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<V
     let img_buf = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)?;
     let img = image::DynamicImage::ImageRgba8(img_buf);
     let px = quality.px();
-    let cropped = crop_to_fill(img, px, px);
+    let resized = resize_preserving_aspect(img, px);
 
     std::fs::create_dir_all(dst.parent()?).ok()?;
     let mut buf = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q())
-        .encode_image(&cropped).ok()?;
+        .encode_image(&resized).ok()?;
     std::fs::write(dst, &buf).ok();
     Some(buf)
 }
@@ -221,11 +234,11 @@ fn generate_svg_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<V
     if ok && tmp.exists() {
         let img  = image::open(&tmp).ok()?;
         let _ = std::fs::remove_file(&tmp);
-        let cropped = crop_to_fill(img, px, px);
+        let resized = resize_preserving_aspect(img, px);
         std::fs::create_dir_all(dst.parent()?).ok()?;
         let mut buf = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q())
-            .encode_image(&cropped).ok()?;
+            .encode_image(&resized).ok()?;
         std::fs::write(dst, &buf).ok();
         return Some(buf);
     }
@@ -241,11 +254,11 @@ fn generate_svg_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<V
     if ok2 && tmp2.exists() {
         let img = image::open(&tmp2).ok()?;
         let _ = std::fs::remove_file(&tmp2);
-        let cropped = crop_to_fill(img, px, px);
+        let resized = resize_preserving_aspect(img, px);
         std::fs::create_dir_all(dst.parent()?).ok()?;
         let mut buf = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality.jpeg_q())
-            .encode_image(&cropped).ok()?;
+            .encode_image(&resized).ok()?;
         std::fs::write(dst, &buf).ok();
         return Some(buf);
     }

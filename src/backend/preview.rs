@@ -251,8 +251,8 @@ except Exception as e:
             .map_err(|e| format!("Resim okunamadı: {}", e))?;
         let mut image_rgba = image::load_from_memory(&bytes).ok().map(|img| {
             let (w, h) = (img.width(), img.height());
-            let img = if w > 1200 || h > 1200 {
-                img.thumbnail(1200, 1200)
+            let img = if w > 2560 || h > 2560 {
+                img.resize(2560, 2560, image::imageops::FilterType::Lanczos3)
             } else {
                 img
             };
@@ -264,7 +264,7 @@ except Exception as e:
         // Eğer Rust `image` kütüphanesi formatı çözemediyse ffmpeg ile dene
         if image_rgba.is_none() {
             if let Ok(out) = std::process::Command::new("ffmpeg")
-                .args(["-v", "error", "-i", &path, "-vf", "scale='min(1200,iw)':-1", "-vframes", "1", "-f", "image2", "-vcodec", "png", "pipe:1"])
+                .args(["-v", "error", "-i", &path, "-vf", "scale='min(2560,iw)':-1:flags=lanczos", "-vframes", "1", "-f", "image2", "-vcodec", "png", "pipe:1"])
                 .output()
             {
                 if out.status.success() && !out.stdout.is_empty() {
@@ -305,8 +305,8 @@ except Exception as e:
 
         let image_rgba = thumb_bytes.and_then(|bytes| {
             image::load_from_memory(&bytes).ok().map(|img| {
-                let img = if img.width() > 800 || img.height() > 800 {
-                    img.thumbnail(800, 800)
+                let img = if img.width() > 1280 || img.height() > 1280 {
+                    img.resize(1280, 1280, image::imageops::FilterType::Lanczos3)
                 } else {
                     img
                 };
