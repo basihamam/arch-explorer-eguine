@@ -19,6 +19,18 @@ pub enum ViewMode {
     Columns,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MediaGridStyle {
+    Masonry,
+    NemoGrid,
+}
+
+impl Default for MediaGridStyle {
+    fn default() -> Self {
+        MediaGridStyle::NemoGrid
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
     Name,
@@ -1338,6 +1350,7 @@ pub struct AppState {
 
     pub view_mode:  ViewMode,
     pub view_scale: f32,  // Ctrl+scroll zoom, 0.5..3.0
+    pub media_grid_style: MediaGridStyle,
     pub needs_reload: bool,
 
     // Sekme sistemi
@@ -1487,6 +1500,7 @@ impl AppState {
 
             view_mode:   ViewMode::Grid,
             view_scale:  crate::theme::load_saved_view_scale().unwrap_or(1.0).clamp(0.4, 3.0),
+            media_grid_style: crate::theme::load_saved_media_grid_style().unwrap_or(MediaGridStyle::NemoGrid),
             needs_reload: true,
 
             tabs: initial_tabs,
@@ -1698,6 +1712,7 @@ impl AppState {
                     match saved_mode.as_str() {
                         "list" => self.view_mode = ViewMode::List,
                         "grid" => self.view_mode = ViewMode::Grid,
+                        "compact" => self.view_mode = ViewMode::Compact,
                         _ => {}
                     }
                 }
@@ -1755,6 +1770,7 @@ impl AppState {
                 match saved_mode.as_str() {
                     "list" => self.view_mode = ViewMode::List,
                     "grid" => self.view_mode = ViewMode::Grid,
+                    "compact" => self.view_mode = ViewMode::Compact,
                     _ => {}
                 }
             }
@@ -1834,6 +1850,7 @@ impl AppState {
                 match saved_mode.as_str() {
                     "list" => self.view_mode = ViewMode::List,
                     "grid" => self.view_mode = ViewMode::Grid,
+                    "compact" => self.view_mode = ViewMode::Compact,
                     _ => {}
                 }
             } else {
@@ -1868,12 +1885,18 @@ impl AppState {
         let mode_str = match mode {
             ViewMode::List => "list",
             ViewMode::Grid => "grid",
+            ViewMode::Compact => "compact",
             _ => "grid",
         };
         let path_clean = self.nav.current_path.trim_end_matches('/');
         let key = if path_clean.is_empty() { "/" } else { path_clean };
         self.dir_view_modes.insert(key.to_string(), mode_str.to_string());
         crate::theme::save_dir_view_mode(key, mode_str);
+    }
+
+    pub fn set_media_grid_style(&mut self, style: MediaGridStyle) {
+        self.media_grid_style = style;
+        crate::theme::save_media_grid_style(style);
     }
 
     pub fn select_paths_and_queue(&mut self, paths: Vec<String>) {
@@ -2564,6 +2587,7 @@ pub struct PaneSnapshot {
     pub drag:          DragState,
     pub view_mode:     ViewMode,
     pub view_scale:    f32,
+    pub media_grid_style: MediaGridStyle,
     pub tabs:          TabState,
     pub needs_reload:  bool,
     pub context_menu:  Option<ContextMenuState>,
@@ -2592,6 +2616,7 @@ impl PaneSnapshot {
             drag:          state.drag.clone(),
             view_mode:     state.view_mode.clone(),
             view_scale:    state.view_scale,
+            media_grid_style: state.media_grid_style,
             tabs:          state.tabs.clone(),
             needs_reload:  state.needs_reload,
             context_menu:  state.panels.context_menu.clone(),
@@ -2671,6 +2696,7 @@ impl AppState {
         self.search        = snap.search.clone();
         self.drag          = snap.drag.clone();
         self.view_mode     = snap.view_mode.clone();
+        self.media_grid_style = snap.media_grid_style;
         // view_scale her iki panel arasında senkronize kalır, zıplama yapmaz
         self.tabs          = snap.tabs.clone();
         self.needs_reload  = snap.needs_reload;

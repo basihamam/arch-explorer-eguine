@@ -2,7 +2,7 @@
 
 use egui::*;
 use crate::theme::types::AexTheme;
-use crate::state::{AppState, ViewMode};
+use crate::state::{AppState, ViewMode, MediaGridStyle};
 use super::icon;
 
 pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
@@ -188,7 +188,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                 if show_view_modes {
                     ui.add_space(sp.sm);
 
-                    // ── View Mode Toggle ──────────────────────────────────────
+                    // ── View Mode Toggle & Options ───────────────────────────
                     let grid_color = if state.view_mode == ViewMode::Grid {
                         c.accent()
                     } else {
@@ -199,12 +199,139 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                     } else {
                         c.text_hint()
                     };
+                    let compact_color = if state.view_mode == ViewMode::Compact {
+                        c.accent()
+                    } else {
+                        c.text_hint()
+                    };
 
+                    if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::Grid);
+                    }
                     if icon_btn(ui, t, icon(t, "list"), list_color).on_hover_text("List View (Ctrl+2)").clicked() {
                         state.set_view_mode_for_current_dir(ViewMode::List);
                     }
-                    if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
-                        state.set_view_mode_for_current_dir(ViewMode::Grid);
+                    if icon_btn(ui, t, icon(t, "compact"), compact_color).on_hover_text("Compact View (Ctrl+3)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::Compact);
+                    }
+
+                    let view_opts_id = Id::new("toolbar_view_options_popup_open");
+                    let mut popup_open: bool = ui.ctx().data_mut(|d| d.get_temp(view_opts_id).unwrap_or(false));
+                    let opts_color = if popup_open { c.accent() } else { c.text_hint() };
+                    let opts_btn = icon_btn(ui, t, "⋮", opts_color).on_hover_text("View Options");
+                    if opts_btn.clicked() {
+                        popup_open = !popup_open;
+                        ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, popup_open));
+                    }
+
+                    if popup_open {
+                        let popup_w = 210.0;
+                        let popup_pos = Pos2::new(
+                            (opts_btn.rect.right() - popup_w).max(4.0),
+                            opts_btn.rect.bottom() + 4.0,
+                        );
+
+                        let menu_fill = if t.effects.glass_panels {
+                            Color32::from_rgba_unmultiplied(
+                                c.bg_mantle().r(),
+                                c.bg_mantle().g(),
+                                c.bg_mantle().b(),
+                                (t.effects.panel_opacity * 255.0) as u8,
+                            )
+                        } else {
+                            c.bg_mantle()
+                        };
+
+                        let mut close_popup = false;
+                        let mut new_style: Option<MediaGridStyle> = None;
+
+                        egui::Area::new(Id::new("toolbar_view_options_popup_area"))
+                            .fixed_pos(popup_pos)
+                            .order(Order::Tooltip)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame {
+                                    fill: menu_fill,
+                                    rounding: Rounding::same(s.radius_md),
+                                    stroke: Stroke::new(1.0_f32, c.border()),
+                                    shadow: epaint::Shadow {
+                                        offset: Vec2::new(0.0, 4.0),
+                                        blur: 12.0,
+                                        spread: 0.0,
+                                        color: Color32::from_rgba_unmultiplied(0, 0, 0, 90),
+                                    },
+                                    inner_margin: Margin::same(sp.xs + 2.0),
+                                    ..Default::default()
+                                }
+                                .show(ui, |ui| {
+                                    ui.set_width(popup_w - (sp.xs + 2.0) * 2.0);
+
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        RichText::new("GRID VIEW STYLE")
+                                            .size(9.5)
+                                            .color(c.text_hint())
+                                            .strong(),
+                                    );
+                                    ui.add_space(4.0);
+
+                                    // Option 1: Nemo Uniform Grid
+                                    let is_nemo = state.media_grid_style == MediaGridStyle::NemoGrid;
+                                    let (r1, resp1) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                                    if resp1.hovered() {
+                                        ui.painter().rect_filled(r1, Rounding::same(s.radius_sm), c.bg_surface0());
+                                    }
+                                    let check_str1 = if is_nemo { "✓ " } else { "   " };
+                                    let col1 = if is_nemo { c.accent() } else { c.text_primary() };
+                                    ui.painter().text(
+                                        r1.left_center() + Vec2::new(6.0, 0.0),
+                                        Align2::LEFT_CENTER,
+                                        format!("{}Nemo Uniform Grid", check_str1),
+                                        FontId::new(t.typography.size_sm, FontFamily::Proportional),
+                                        col1,
+                                    );
+                                    if resp1.clicked() {
+                                        new_style = Some(MediaGridStyle::NemoGrid);
+                                        close_popup = true;
+                                    }
+
+                                    // Option 2: Masonry (Mansion) Flow
+                                    let is_masonry = state.media_grid_style == MediaGridStyle::Masonry;
+                                    let (r2, resp2) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                                    if resp2.hovered() {
+                                        ui.painter().rect_filled(r2, Rounding::same(s.radius_sm), c.bg_surface0());
+                                    }
+                                    let check_str2 = if is_masonry { "✓ " } else { "   " };
+                                    let col2 = if is_masonry { c.accent() } else { c.text_primary() };
+                                    ui.painter().text(
+                                        r2.left_center() + Vec2::new(6.0, 0.0),
+                                        Align2::LEFT_CENTER,
+                                        format!("{}Masonry (Mansion) Flow", check_str2),
+                                        FontId::new(t.typography.size_sm, FontFamily::Proportional),
+                                        col2,
+                                    );
+                                    if resp2.clicked() {
+                                        new_style = Some(MediaGridStyle::Masonry);
+                                        close_popup = true;
+                                    }
+
+                                    // Check click outside
+                                    let popup_rect = ui.min_rect();
+                                    if ui.input(|i| i.pointer.any_pressed()) {
+                                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                            if !popup_rect.contains(pos) && !opts_btn.rect.contains(pos) {
+                                                close_popup = true;
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+
+                        if let Some(style) = new_style {
+                            state.set_media_grid_style(style);
+                        }
+                        if close_popup {
+                            ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, false));
+                        }
                     }
                 }
             });

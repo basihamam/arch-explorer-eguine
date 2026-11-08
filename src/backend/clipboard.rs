@@ -868,9 +868,11 @@ pub(crate) fn move_item_inner(src: &Path, dst: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_clipboard_copy_paste_undo() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let test_dir = format!("/tmp/ae_test_copy_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);
@@ -908,6 +910,7 @@ mod tests {
 
     #[test]
     fn test_clipboard_cut_paste_undo() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let test_dir = format!("/tmp/ae_test_cut_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);

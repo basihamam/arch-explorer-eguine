@@ -3,7 +3,7 @@
 use egui::*;
 use image; // GIF decoding in draw_grid_thumbnail
 use crate::theme::types::AexTheme;
-use crate::state::{AppState, ViewMode, ContextMenuState, ActivePanel};
+use crate::state::{AppState, ViewMode, MediaGridStyle, ContextMenuState, ActivePanel};
 use crate::backend::fs_ops::FileEntry;
 use super::{file_icon, human_size, icon};
 
@@ -83,6 +83,73 @@ impl GridHitArea {
     pub fn intersects(&self, r: &Rect) -> bool {
         self.thumb_hit.intersects(*r) || self.label_hit.intersects(*r)
     }
+}
+
+pub fn format_nemo_size(bytes: u64) -> String {
+    const K: u64 = 1024;
+    if bytes < K {
+        format!("{} B", bytes)
+    } else if bytes < K * K {
+        format!("{:.1} kB", bytes as f64 / K as f64)
+    } else if bytes < K * K * K {
+        format!("{:.1} MB", bytes as f64 / (K * K) as f64)
+    } else if bytes < K * K * K * K {
+        format!("{:.1} GB", bytes as f64 / (K * K * K) as f64)
+    } else {
+        format!("{:.2} TB", bytes as f64 / (K * K * K * K) as f64)
+    }
+}
+
+pub fn entry_type_label(entry: &FileEntry) -> &'static str {
+    if entry.is_dir {
+        return "Folder";
+    }
+    let ext = entry.extension.to_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "ico" | "svg" | "tiff" | "avif" | "heic" | "heif" => "Image",
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "flv" | "wmv" | "m4v" | "ts" => "Video",
+        "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "opus" | "wma" => "Audio",
+        "pdf" => "PDF Document",
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" => "Archive",
+        "txt" | "md" | "rst" | "log" => "Plain Text",
+        "rs" | "c" | "cpp" | "h" | "hpp" | "py" | "js" | "ts" | "html" | "css" | "json" | "toml" | "yaml" | "yml" | "sh" | "bash" | "zsh" => "Document",
+        "doc" | "docx" | "odt" => "Document",
+        "xls" | "xlsx" | "ods" | "csv" => "Spreadsheet",
+        "ppt" | "pptx" | "odp" => "Presentation",
+        "iso" | "img" => "Disk Image",
+        _ if entry.is_executable => "Executable",
+        _ => "File",
+    }
+}
+
+pub fn truncate_to_width(ui: &Ui, text: &str, font_id: &FontId, max_width: f32) -> String {
+    if max_width <= 8.0 {
+        return String::new();
+    }
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font_id.clone(), Color32::WHITE);
+    if galley.size().x <= max_width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let mut low = 0;
+    let mut high = chars.len();
+    let mut best = String::from("…");
+    while low <= high {
+        let mid = (low + high) / 2;
+        let candidate = format!("{}…", chars[..mid].iter().collect::<String>());
+        let g = ui.painter().layout_no_wrap(candidate.clone(), font_id.clone(), Color32::WHITE);
+        if g.size().x <= max_width {
+            best = candidate;
+            low = mid + 1;
+        } else {
+            if mid == 0 { break; }
+            high = mid - 1;
+        }
+    }
+    best
 }
 
 fn is_media_entry(entry: &FileEntry) -> bool {
@@ -255,7 +322,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             let mut current_frame_rects = Vec::with_capacity(total_count + 1);
             let mut rendered_entries: Vec<FileEntry> = Vec::with_capacity(total_count + 1);
 
-            if is_media_dir {
+            if is_media_dir && state.media_grid_style == MediaGridStyle::Masonry {
                 let col_w = ((available_w - (cols.saturating_sub(1)) as f32 * gap) / cols as f32).max(60.0);
                 let mut col_assignments: Vec<Vec<usize>> = vec![Vec::new(); cols];
                 let mut col_heights: Vec<f32> = vec![0.0; cols];
@@ -295,7 +362,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
             } else {
                 let total_rows = (total_count + cols - 1) / cols;
                 let item_w = item_size;
-                let item_h = (item_size * 1.28).round();
+                let item_h = (item_size * 1.25).max(item_size + 38.0).round();
                 let row_h = item_h + gap;
 
                 let view_top = (bg_rect.min.y - content_top_y).max(0.0);
@@ -408,18 +475,19 @@ fn masonry_grid_item(
         ((item_w * 0.65).round(), 1.0)
     };
 
-    let name_font  = (item_w * 0.105).clamp(9.5, 13.0);
-    let badge_font = (item_w * 0.080).clamp(8.0, 11.0);
+    let name_font  = (item_w * 0.102).clamp(9.5, 12.5);
+    let badge_font = (item_w * 0.080).clamp(8.0, 10.5);
 
     let chars_per_line = ((item_w - 8.0) / (name_font * 0.52)).max(8.0) as usize;
-    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 3);
+    // Max 2 lines of filename wrapping so card height remains crisp and clamped
+    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 2);
 
     let line_spacing = name_font * 1.20;
-    let label_h = name_lines.len() as f32 * line_spacing + 5.0;
+    let label_h = (name_lines.len() as f32 * line_spacing + 4.0).clamp(16.0, 36.0);
     let has_badge = entry.is_dir || entry.size > 0;
     let badge_h = if has_badge { badge_font + 6.0 } else { 0.0 };
 
-    let total_card_h = thumb_h + label_h + badge_h + 14.0;
+    let total_card_h = thumb_h + label_h + badge_h + 12.0;
 
     let (rect, resp) = ui.allocate_exact_size(
         Vec2::new(item_w, total_card_h),
@@ -440,6 +508,7 @@ fn masonry_grid_item(
     let sel_factor = ui.ctx().animate_bool(sel_anim_id, is_sel);
 
     if ui.is_rect_visible(rect) {
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let opacity = if is_cut { 0.4 } else { 1.0 };
 
         if sel_factor > 0.001 {
@@ -447,18 +516,18 @@ fn masonry_grid_item(
             let sel_bg = Color32::from_rgba_unmultiplied(
                 c.accent().r(), c.accent().g(), c.accent().b(), sel_alpha
             );
-            ui.painter().rect_filled(rect, Rounding::same(s.radius_md), sel_bg);
+            painter.rect_filled(rect, Rounding::same(s.radius_md), sel_bg);
             let border_alpha = (255.0 * sel_factor) as u8;
             let border_col = Color32::from_rgba_unmultiplied(
                 c.accent().r(), c.accent().g(), c.accent().b(), border_alpha
             );
-            ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, border_col));
+            painter.rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, border_col));
         } else if hover_factor > 0.001 {
             let hover_alpha = (95.0 * hover_factor) as u8;
             let hover_bg = Color32::from_rgba_unmultiplied(
                 c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), hover_alpha
             );
-            ui.painter().rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
+            painter.rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
         }
 
         let thumb_rect = Rect::from_min_size(
@@ -472,8 +541,8 @@ fn masonry_grid_item(
             let handle: Option<egui::TextureHandle> = ui.ctx().data_mut(|d| d.get_temp(thumb_id));
             let tint = Color32::from_rgba_unmultiplied(255, 255, 255, if is_cut { 102 } else { (255.0 * opacity) as u8 });
             if let Some(ref h) = handle {
-                ui.painter().rect_filled(thumb_rect, Rounding::same(s.radius_sm), Color32::from_black_alpha(30));
-                ui.painter().image(
+                painter.rect_filled(thumb_rect, Rounding::same(s.radius_sm), Color32::from_black_alpha(30));
+                painter.image(
                     h.id(),
                     thumb_rect,
                     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
@@ -491,7 +560,7 @@ fn masonry_grid_item(
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
             let icon_font = (item_w * 0.32).clamp(16.0, 48.0);
-            ui.painter().text(
+            painter.text(
                 thumb_rect.center(),
                 Align2::CENTER_CENTER,
                 icon_str,
@@ -500,21 +569,24 @@ fn masonry_grid_item(
             );
         }
 
-        let name_center_y = rect.min.y + thumb_h + 8.0 + label_h / 2.0;
+        let max_text_w = (item_w - 8.0).max(10.0);
+        let name_center_y = rect.min.y + thumb_h + 6.0 + label_h / 2.0;
         let text_color = if is_sel {
             c.accent()
         } else {
             Color32::from_rgba_unmultiplied(c.text_primary().r(), c.text_primary().g(), c.text_primary().b(), (255.0 * opacity) as u8)
         };
 
+        let font_id = FontId::new(name_font, FontFamily::Proportional);
         let start_y = name_center_y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
         for (li, line) in name_lines.iter().enumerate() {
             let ly = start_y + li as f32 * line_spacing;
-            ui.painter().text(
+            let truncated = truncate_to_width(ui, line, &font_id, max_text_w);
+            painter.text(
                 Pos2::new(rect.center().x, ly),
                 Align2::CENTER_CENTER,
-                line,
-                FontId::new(name_font, FontFamily::Proportional),
+                truncated,
+                font_id.clone(),
                 text_color,
             );
         }
@@ -522,21 +594,23 @@ fn masonry_grid_item(
         if has_badge {
             let badge_text = if entry.is_dir {
                 if let Some(&sz) = state.du_sizes.get(&entry.path) {
-                    human_size(sz)
+                    format_nemo_size(sz)
                 } else if let Some(sz) = crate::backend::du_cache::get_cached_size(&entry.path) {
-                    human_size(sz)
+                    format_nemo_size(sz)
                 } else {
                     "klasör".into()
                 }
             } else {
-                human_size(entry.size)
+                format_nemo_size(entry.size)
             };
-            let badge_y = rect.max.y - 7.0;
-            ui.painter().text(
+            let badge_font_id = FontId::new(badge_font, FontFamily::Proportional);
+            let truncated_badge = truncate_to_width(ui, &badge_text, &badge_font_id, max_text_w);
+            let badge_y = rect.max.y - 6.0;
+            painter.text(
                 Pos2::new(rect.center().x, badge_y),
                 Align2::CENTER_BOTTOM,
-                badge_text,
-                FontId::new(badge_font, FontFamily::Proportional),
+                truncated_badge,
+                badge_font_id,
                 c.text_hint(),
             );
         }
@@ -581,7 +655,6 @@ fn grid_item(
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
 ) -> GridHitArea {
-
     let c      = &t.colors;
     let s      = &t.shape;
     let is_sel = state.selection.is_selected_at(&entry.path, idx);
@@ -594,29 +667,31 @@ fn grid_item(
     );
 
     // Visual calculations: Proportional layout coordinates (Nemo style)
-    let icon_area_h = item_h * 0.52;
-    let visual_center = rect.min + Vec2::new(item_w / 2.0, icon_area_h * 0.56);
-    let max_thumb_w = (item_w - 12.0).max(32.0);
-    let max_thumb_h = (icon_area_h - 6.0).max(32.0);
+    let icon_area_h = (item_h * 0.52).round();
+    let max_thumb_w = (item_w - 12.0).max(24.0);
+    let max_thumb_h = (icon_area_h - 6.0).max(24.0);
+    let visual_center = rect.min + Vec2::new(item_w / 2.0, 3.0 + max_thumb_h / 2.0);
     let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::new(max_thumb_w, max_thumb_h));
 
-    let has_badge = item_h >= 68.0 && (entry.is_dir || entry.size > 0);
-    let icon_font  = (item_w * 0.38).clamp(20.0, 56.0);
-    let name_font  = (item_w * 0.108).clamp(9.5, 13.0);
-    let badge_font = (item_w * 0.082).clamp(8.0, 10.5);
-
-    let chars_per_line = ((item_w - 8.0) / (name_font * 0.52)).max(8.0) as usize;
-    // Nemo-style multi-line name wrapping (up to 3 lines)
-    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 3);
-
-    let max_line_len = name_lines.iter().map(|s| s.chars().count()).max().unwrap_or(1);
-    let approx_label_w = (max_line_len as f32 * name_font * 0.56 + 10.0).clamp(24.0, item_w - 4.0);
-    let line_spacing = name_font * 1.20;
-    let label_pill_h = (name_lines.len() as f32 * line_spacing + 5.0).max(name_font + 6.0);
+    let max_text_w = (item_w - 8.0).max(20.0);
+    let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
+    let sub_font   = (name_font * 0.86).clamp(8.5, 10.5);
+    let name_font_id = FontId::new(name_font, FontFamily::Proportional);
+    let sub_font_id  = FontId::new(sub_font, FontFamily::Proportional);
 
     let label_top_y = rect.min.y + icon_area_h + 3.0;
-    let name_rect_center = Pos2::new(rect.center().x, label_top_y + label_pill_h / 2.0);
-    let label_pill_rect = Rect::from_center_size(name_rect_center, Vec2::new(approx_label_w, label_pill_h));
+    let label_avail_h = (rect.max.y - 3.0 - label_top_y).max(18.0);
+
+    let display_name = truncate_to_width(ui, &entry.name, &name_font_id, max_text_w);
+    let name_galley = ui.painter().layout_no_wrap(display_name.clone(), name_font_id.clone(), Color32::WHITE);
+    let name_text_w = (name_galley.size().x + 8.0).clamp(24.0, max_text_w);
+    let name_pill_h = (name_font + 6.0).min(label_avail_h * 0.42);
+
+    let y_name = label_top_y + name_pill_h / 2.0;
+    let label_pill_rect = Rect::from_center_size(
+        Pos2::new(rect.center().x, y_name),
+        Vec2::new(name_text_w, name_pill_h),
+    );
 
     // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana oturan hitbox
     let hit_area = GridHitArea {
@@ -638,7 +713,7 @@ fn grid_item(
     let sel_factor = ui.ctx().animate_bool(sel_anim_id, is_sel);
 
     if ui.is_rect_visible(rect) {
-        // Cut opacity (eğer clipboard'da cut ise)
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let opacity = if is_cut { 0.4 } else { 1.0 };
 
         // ── Card Selection & Hover Backgrounds with Smooth Interpolation ──
@@ -647,20 +722,20 @@ fn grid_item(
             let sel_bg = Color32::from_rgba_unmultiplied(
                 c.accent().r(), c.accent().g(), c.accent().b(), sel_alpha
             );
-            ui.painter().rect_filled(rect, Rounding::same(s.radius_md), sel_bg);
+            painter.rect_filled(rect, Rounding::same(s.radius_md), sel_bg);
             let border_alpha = (255.0 * sel_factor) as u8;
             let border_col = Color32::from_rgba_unmultiplied(
                 c.accent().r(), c.accent().g(), c.accent().b(), border_alpha
             );
-            ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, border_col));
+            painter.rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.5_f32, border_col));
             // Name pill highlight
-            ui.painter().rect_filled(label_pill_rect, Rounding::same(4.0), border_col);
+            painter.rect_filled(label_pill_rect.intersect(rect.shrink(2.0)), Rounding::same(3.0), border_col);
         } else if hover_factor > 0.001 {
             let hover_alpha = (95.0 * hover_factor) as u8;
             let hover_bg = Color32::from_rgba_unmultiplied(
                 c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), hover_alpha
             );
-            ui.painter().rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
+            painter.rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
         }
 
         // Geri alma / aktarım sonrası parıldama efekti (Glow pulse)
@@ -668,7 +743,7 @@ fn grid_item(
             let glow_col = Color32::from_rgba_unmultiplied(
                 c.accent().r(), c.accent().g(), c.accent().b(), (200.0 * pulse) as u8
             );
-            ui.painter().rect_stroke(
+            painter.rect_stroke(
                 rect.expand(2.5),
                 Rounding::same(s.radius_md + 2.0),
                 Stroke::new(2.5_f32, glow_col),
@@ -676,15 +751,16 @@ fn grid_item(
             ui.ctx().request_repaint();
         }
 
-        // Thumbnail çizildiyse icon çizme
+        // Thumbnail çizildiyse icon çizme (native aspect ratio korunur)
         let drew_thumb = draw_grid_thumbnail(ui, t, entry, rect, item_w, item_h, thumb_q, is_cut, opacity);
 
         // Icon — sadece thumbnail yoksa çiz
         if !drew_thumb {
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
+            let icon_font = (item_w * 0.36).clamp(18.0, 50.0);
 
-            ui.painter().text(
+            painter.text(
                 visual_center,
                 Align2::CENTER_CENTER,
                 icon_str,
@@ -698,11 +774,11 @@ fn grid_item(
 
         // Symlink indicator
         if entry.is_symlink {
-            ui.painter().text(
-                rect.min + Vec2::new(item_w * 0.76, item_h * 0.18),
+            painter.text(
+                rect.min + Vec2::new(item_w * 0.76, item_h * 0.16),
                 Align2::CENTER_CENTER,
                 icon(t, "symlink"),
-                FontId::new(badge_font, FontFamily::Monospace),
+                FontId::new(sub_font, FontFamily::Monospace),
                 c.info(),
             );
         }
@@ -710,8 +786,8 @@ fn grid_item(
         // File name — rename mode veya normal
         if is_renaming {
             let te_rect = Rect::from_center_size(
-                name_rect_center,
-                Vec2::new(item_w - 8.0, 20.0),
+                Pos2::new(rect.center().x, y_name),
+                Vec2::new(max_text_w, 20.0),
             );
             let te_id = Id::new(format!("grid_rename_{}", entry.path));
             let te_resp = ui.put(
@@ -719,7 +795,7 @@ fn grid_item(
                 egui::TextEdit::singleline(&mut state.rename_buf)
                     .id(te_id)
                     .font(FontId::new(t.typography.size_xs, FontFamily::Proportional))
-                    .desired_width(item_w - 8.0)
+                    .desired_width(max_text_w)
                     .frame(true),
             );
             if state.rename_just_started {
@@ -761,43 +837,55 @@ fn grid_item(
                 )
             };
 
-            let start_y = name_rect_center.y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
-            for (li, line) in name_lines.iter().enumerate() {
-                let ly = start_y + li as f32 * line_spacing;
-                ui.painter().text(
-                    Pos2::new(name_rect_center.x, ly),
-                    Align2::CENTER_CENTER,
-                    line,
-                    FontId::new(name_font, FontFamily::Proportional),
-                    text_color,
-                );
-            }
+            painter.text(
+                Pos2::new(rect.center().x, y_name),
+                Align2::CENTER_CENTER,
+                display_name,
+                name_font_id.clone(),
+                text_color,
+            );
         }
 
-        // File size badge (or folder item count/size)
-        if has_badge {
-            let badge_text = if entry.is_dir {
-                if let Some(&sz) = state.du_sizes.get(&entry.path) {
-                    human_size(sz)
-                } else if let Some(sz) = crate::backend::du_cache::get_cached_size(&entry.path) {
-                    human_size(sz)
-                } else if let Some(cnt) = crate::backend::du_cache::get_dir_item_count(&entry.path) {
-                    format!("{} öğe", cnt)
-                } else {
-                    crate::backend::du_cache::request_dir_item_count(&entry.path, ui.ctx().clone());
-                    "klasör".into()
-                }
+        // Lines 2 & 3: Nemo-style size and type labels (reference screenshot matching)
+        let size_str = if entry.is_dir {
+            if let Some(&sz) = state.du_sizes.get(&entry.path) {
+                format_nemo_size(sz)
+            } else if let Some(sz) = crate::backend::du_cache::get_cached_size(&entry.path) {
+                format_nemo_size(sz)
+            } else if let Some(cnt) = crate::backend::du_cache::get_dir_item_count(&entry.path) {
+                format!("{} items", cnt)
             } else {
-                human_size(entry.size)
-            };
+                crate::backend::du_cache::request_dir_item_count(&entry.path, ui.ctx().clone());
+                "Folder".to_string()
+            }
+        } else {
+            format_nemo_size(entry.size)
+        };
+        let display_size = truncate_to_width(ui, &size_str, &sub_font_id, max_text_w);
 
-            let badge_y = (label_pill_rect.max.y + badge_font * 0.7 + 3.0).min(rect.max.y - 4.0);
-            let badge_center = Pos2::new(rect.center().x, badge_y);
-            ui.painter().text(
-                badge_center,
+        let type_str = entry_type_label(entry);
+        let display_type = truncate_to_width(ui, type_str, &sub_font_id, max_text_w);
+
+        let sub_line_step = sub_font * 1.25;
+        let y_size = (y_name + name_pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.max.y - sub_line_step - 2.0);
+        let y_type = (y_size + sub_line_step).min(rect.max.y - 4.0);
+
+        if y_size < rect.max.y - 2.0 {
+            painter.text(
+                Pos2::new(rect.center().x, y_size),
                 Align2::CENTER_CENTER,
-                badge_text,
-                FontId::new(badge_font, FontFamily::Proportional),
+                display_size,
+                sub_font_id.clone(),
+                c.text_hint(),
+            );
+        }
+
+        if y_type < rect.max.y - 1.0 && y_type > y_size + sub_font * 0.8 {
+            painter.text(
+                Pos2::new(rect.center().x, y_type),
+                Align2::CENTER_CENTER,
+                display_type,
+                sub_font_id,
                 c.text_hint(),
             );
         }
@@ -808,8 +896,8 @@ fn grid_item(
                 Pos2::new(rect.max.x - 18.0, rect.min.y + 4.0),
                 Vec2::new(14.0, 14.0),
             );
-            ui.painter().rect_filled(b_rect, Rounding::same(3.0), b_col);
-            ui.painter().text(
+            painter.rect_filled(b_rect, Rounding::same(3.0), b_col);
+            painter.text(
                 b_rect.center(),
                 Align2::CENTER_CENTER,
                 b_str,
@@ -1167,8 +1255,15 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         let handle: Option<egui::TextureHandle> =
                             ui.ctx().data_mut(|d| d.get_temp(th_id));
                         if let Some(ref h) = handle {
+                            let tex_sz = h.size();
+                            let aspect = if tex_sz[1] > 0 { tex_sz[0] as f32 / tex_sz[1] as f32 } else { 1.0 };
+                            let (fit_w, fit_h) = if aspect >= 1.0 {
+                                (th_sz, (th_sz / aspect).max(1.0))
+                            } else {
+                                ((th_sz * aspect).max(1.0), th_sz)
+                            };
                             let tr = Rect::from_center_size(
-                                Pos2::new(icon_cx, rect.center().y), Vec2::splat(th_sz));
+                                Pos2::new(icon_cx, rect.center().y), Vec2::new(fit_w, fit_h));
                             ui.painter().image(h.id(), tr,
                                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0,1.0)), Color32::WHITE);
                             drew_thumb = true;
@@ -1776,49 +1871,396 @@ fn sort_header(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Compact View (denser list)
+// Compact View (Nemo-style multi-column layout)
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEntry], pane_tag: &str) {
-    let c     = &t.colors;
-    let row_h = 22.0;
-    let w     = ui.available_width();
+    let c  = &t.colors;
+    let s  = &t.shape;
+    let sp = &t.spacing;
+
+    let available_w = ui.available_width();
+    let col_w_base = (220.0 * state.view_scale).clamp(160.0, 360.0);
+    let row_h = (28.0 * (state.view_scale * 0.4 + 0.6)).clamp(22.0, 42.0);
+    let col_gap = 10.0;
+    let row_gap = 2.0;
+
+    let cols = ((available_w + col_gap) / (col_w_base + col_gap)).max(1.0) as usize;
+    let actual_col_w = ((available_w - (cols.saturating_sub(1) as f32 * col_gap)) / cols as f32).max(120.0);
+
+    let scroll_id = Id::new(format!("file_compact_{}", pane_tag)).with(&state.nav.current_path);
 
     egui::ScrollArea::vertical()
-        .id_salt(Id::new(format!("file_compact_{}", pane_tag)).with(&state.nav.current_path))
+        .id_salt(scroll_id)
         .auto_shrink([false; 2])
         .drag_to_scroll(false)
         .show(ui, |ui| {
-            for entry in entries {
-                let is_sel = state.selection.is_selected(&entry.path);
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, row_h), Sense::click());
+            let bg_rect = ui.clip_rect();
 
-                if ui.is_rect_visible(rect) {
-                    if is_sel {
-                        ui.painter().rect_filled(rect, Rounding::ZERO,
-                            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 25));
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, Rounding::ZERO, c.bg_surface0());
+            // Deselect / context menu via ctx.input
+            let ptr_clicked = ui.ctx().input(|i| i.pointer.primary_clicked());
+            let ptr_sec = ui.ctx().input(|i| i.pointer.secondary_clicked());
+            let ptr_pos = ui.ctx().input(|i| i.pointer.interact_pos());
+            let ptr_in_bg = ptr_pos.map(|p| bg_rect.contains(p)).unwrap_or(false);
+
+            // Rubber-band drag state & selection
+            let rb_id = Id::new(format!("rubber_band_start_compact_{}", pane_tag));
+            let is_primary_down = ui.ctx().input(|i| i.pointer.primary_down());
+            let press_origin = ui.ctx().input(|i| i.pointer.press_origin());
+
+            let rects_cache_id = Id::new(format!("rendered_rects_compact_{}", pane_tag));
+            let prev_rects: Vec<GridHitArea> = ui.ctx().data_mut(|d| d.get_temp(rects_cache_id)).unwrap_or_default();
+            let pressed_on_item = press_origin.map(|origin| prev_rects.iter().any(|hit| hit.contains(origin))).unwrap_or(false);
+
+            let is_resizing_preview: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_preview")).unwrap_or(false));
+            let is_resizing_sidebar: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_sidebar")).unwrap_or(false));
+            let is_resizing_column: bool = ui.ctx().data_mut(|d| d.get_temp(Id::new("is_resizing_column")).unwrap_or(false));
+
+            let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            let shift = ui.input(|i| i.modifiers.shift);
+
+            if ptr_clicked && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column && !ctrl && !shift {
+                state.selection.clear();
+            }
+            if ptr_sec && ptr_in_bg && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
+                if let Some(pos) = ptr_pos {
+                    state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
+                }
+            }
+
+            let content_top_y = ui.cursor().min.y;
+            let rb_rel_y_id = Id::new(format!("rubber_band_rel_y_compact_{}", pane_tag));
+            let rb_init_sel_id = Id::new(format!("rubber_band_init_sel_compact_{}", pane_tag));
+
+            if is_primary_down && !state.drag.dragging && !pressed_on_item && !is_resizing_preview && !is_resizing_sidebar && !is_resizing_column {
+                if let (Some(origin), Some(cur_pos)) = (press_origin, ptr_pos) {
+                    if bg_rect.contains(origin) {
+                        let drag_delta = cur_pos - origin;
+                        if drag_delta.length() > 4.0 {
+                            let already_active = ui.ctx().data_mut(|d| d.get_temp::<Pos2>(rb_id).is_some());
+                            if !already_active {
+                                let start_rel_y = origin.y - content_top_y;
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(rb_id, origin);
+                                    d.insert_temp(rb_rel_y_id, start_rel_y);
+                                    d.insert_temp(rb_init_sel_id, state.selection.selected.clone());
+                                });
+                            }
+                            state.is_rubber_banding = true;
+                        }
+                    }
+                }
+            } else if !is_primary_down || state.drag.dragging || is_resizing_preview {
+                ui.ctx().data_mut(|d| {
+                    d.remove::<Pos2>(rb_id);
+                    d.remove::<f32>(rb_rel_y_id);
+                    d.remove::<std::collections::HashSet<String>>(rb_init_sel_id);
+                });
+                state.is_rubber_banding = false;
+            }
+
+            let mut active_rb_rect: Option<Rect> = None;
+            if let (Some(start), Some(start_rel_y)) = (
+                ui.ctx().data_mut(|d| d.get_temp::<Pos2>(rb_id)),
+                ui.ctx().data_mut(|d| d.get_temp::<f32>(rb_rel_y_id)),
+            ) {
+                if let Some(cur) = ptr_pos {
+                    state.is_rubber_banding = true;
+
+                    // Auto-scroll near edge
+                    if cur.y < bg_rect.min.y + 45.0 {
+                        let overflow = ((bg_rect.min.y + 45.0) - cur.y).max(0.0);
+                        let scroll_speed = (overflow * 0.45 + 4.0).clamp(4.0, 36.0);
+                        ui.scroll_with_delta(Vec2::new(0.0, scroll_speed));
+                        ui.ctx().request_repaint();
+                    } else if cur.y > bg_rect.max.y - 45.0 {
+                        let overflow = (cur.y - (bg_rect.max.y - 45.0)).max(0.0);
+                        let scroll_speed = (overflow * 0.45 + 4.0).clamp(4.0, 36.0);
+                        ui.scroll_with_delta(Vec2::new(0.0, -scroll_speed));
+                        ui.ctx().request_repaint();
                     }
 
-                    ui.painter().text(
-                        rect.min + Vec2::new(t.spacing.sm + 4.0, row_h / 2.0),
-                        Align2::LEFT_CENTER,
-                        file_icon(t, entry),
-                        FontId::new(11.0, FontFamily::Monospace),
-                        icon_color_for(t, entry),
-                    );
-                    ui.painter().text(
-                        rect.min + Vec2::new(t.spacing.sm + 20.0, row_h / 2.0),
-                        Align2::LEFT_CENTER,
-                        &entry.name,
-                        FontId::new(t.typography.size_sm, FontFamily::Proportional),
-                        if is_sel { c.text_primary() } else { c.text_secondary() },
-                    );
-                }
+                    let current_start_y = content_top_y + start_rel_y;
+                    let effective_start = Pos2::new(start.x, current_start_y);
+                    let rb_rect = Rect::from_two_pos(effective_start, cur);
+                    active_rb_rect = Some(rb_rect);
 
-                if resp.clicked() { state.selection.select_only(entry.path.clone()); }
-                if resp.double_clicked() { open_entry(state, entry); }
+                    let visible_box = rb_rect.intersect(bg_rect);
+                    if visible_box.is_positive() {
+                        let theme_accent = c.accent();
+                        let rb_fill = Color32::from_rgba_unmultiplied(
+                            theme_accent.r(), theme_accent.g(), theme_accent.b(), 35
+                        );
+                        let rb_stroke = theme_accent;
+
+                        let fg_painter = ui.ctx().layer_painter(LayerId::new(Order::Foreground, Id::new("rubber_band_layer_compact")));
+                        fg_painter.rect_filled(visible_box, Rounding::ZERO, rb_fill);
+                        fg_painter.rect_stroke(visible_box, Rounding::ZERO, Stroke::new(1.0_f32, rb_stroke));
+                    }
+                }
+            }
+
+            let total_count = entries.len();
+            let total_rows = (total_count + cols - 1) / cols;
+            let mut current_frame_rects = Vec::with_capacity(total_count + 1);
+
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+            for row_idx in 0..total_rows {
+                let row_start = row_idx * cols;
+                let row_end = (row_start + cols).min(total_count);
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(col_gap, 0.0);
+
+                    for idx in row_start..row_end {
+                        let entry = &entries[idx];
+                        let is_sel = state.selection.is_selected_at(&entry.path, idx);
+                        let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
+
+                        let (rect, resp) = ui.allocate_exact_size(
+                            Vec2::new(actual_col_w, row_h),
+                            Sense::click_and_drag(),
+                        );
+
+                        let item_rect_id = Id::new(format!("item_rect_{}", entry.path));
+                        ui.ctx().data_mut(|d| d.insert_temp(item_rect_id, rect));
+
+                        current_frame_rects.push(GridHitArea {
+                            thumb_hit: rect,
+                            label_hit: rect,
+                        });
+
+                        if ui.is_rect_visible(rect) {
+                            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+
+                            // Background highlight
+                            if is_sel {
+                                let sel_bg = Color32::from_rgba_unmultiplied(
+                                    c.accent().r(), c.accent().g(), c.accent().b(), 40
+                                );
+                                painter.rect_filled(rect, Rounding::same(s.radius_sm), sel_bg);
+                                painter.rect_stroke(rect, Rounding::same(s.radius_sm), Stroke::new(1.0_f32, c.accent()));
+                            } else if resp.hovered() {
+                                painter.rect_filled(rect, Rounding::same(s.radius_sm), c.bg_surface0());
+                            }
+
+                            // Left: Icon (20-24px)
+                            let icon_sz = (row_h - 6.0).clamp(18.0, 24.0);
+                            let icon_rect = Rect::from_center_size(
+                                Pos2::new(rect.min.x + 4.0 + icon_sz / 2.0, rect.center().y),
+                                Vec2::splat(icon_sz),
+                            );
+
+                            // Media thumbnail in compact view if available
+                            let ext = entry.extension.to_lowercase();
+                            let is_media = !entry.is_dir && matches!(ext.as_str(),
+                                "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg");
+                            let mut drew_thumb = false;
+                            if is_media {
+                                let th_id = egui::Id::new(format!("thumb_{}_lo", entry.path));
+                                let handle: Option<egui::TextureHandle> = ui.ctx().data_mut(|d| d.get_temp(th_id));
+                                if let Some(ref h) = handle {
+                                    let tex_sz = h.size();
+                                    let aspect = if tex_sz[1] > 0 { tex_sz[0] as f32 / tex_sz[1] as f32 } else { 1.0 };
+                                    let (fit_w, fit_h) = if aspect >= 1.0 {
+                                        (icon_sz, (icon_sz / aspect).max(1.0))
+                                    } else {
+                                        ((icon_sz * aspect).max(1.0), icon_sz)
+                                    };
+                                    let tr = Rect::from_center_size(icon_rect.center(), Vec2::new(fit_w, fit_h));
+                                    painter.image(h.id(), tr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                                    drew_thumb = true;
+                                }
+                            }
+                            if !drew_thumb {
+                                painter.text(
+                                    icon_rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    file_icon(t, entry),
+                                    FontId::monospace(icon_sz * 0.85),
+                                    icon_color_for(t, entry),
+                                );
+                            }
+
+                            // Right: subtle human-readable size
+                            let size_font = FontId::proportional((row_h * 0.38).clamp(9.5, 11.5));
+                            let size_text = if entry.is_dir {
+                                if let Some(&sz) = state.du_sizes.get(&entry.path) {
+                                    format_nemo_size(sz)
+                                } else if let Some(sz) = crate::backend::du_cache::get_cached_size(&entry.path) {
+                                    format_nemo_size(sz)
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                format_nemo_size(entry.size)
+                            };
+
+                            let size_w = if !size_text.is_empty() {
+                                let galley = ui.painter().layout_no_wrap(size_text.clone(), size_font.clone(), c.text_hint());
+                                let sw = galley.size().x;
+                                painter.text(
+                                    Pos2::new(rect.max.x - 6.0, rect.center().y),
+                                    Align2::RIGHT_CENTER,
+                                    size_text,
+                                    size_font,
+                                    c.text_hint(),
+                                );
+                                sw + 8.0
+                            } else {
+                                0.0
+                            };
+
+                            // Middle: Filename
+                            let name_font = FontId::proportional((row_h * 0.42).clamp(10.5, 13.0));
+                            let name_left = icon_rect.max.x + 6.0;
+                            let name_right = rect.max.x - size_w - 6.0;
+                            let avail_name_w = (name_right - name_left).max(20.0);
+
+                            if is_renaming {
+                                let te_rect = Rect::from_min_max(
+                                    Pos2::new(name_left, rect.min.y + 2.0),
+                                    Pos2::new(name_right, rect.max.y - 2.0),
+                                );
+                                let te_id = Id::new(format!("compact_rename_{}", entry.path));
+                                let te_resp = ui.put(
+                                    te_rect,
+                                    egui::TextEdit::singleline(&mut state.rename_buf)
+                                        .id(te_id)
+                                        .font(name_font)
+                                        .frame(true),
+                                );
+                                if state.rename_just_started {
+                                    te_resp.request_focus();
+                                    state.rename_just_started = false;
+                                }
+                                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                                    state.commit_rename();
+                                } else if te_resp.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                        state.cancel_rename();
+                                    } else {
+                                        state.commit_rename();
+                                    }
+                                }
+                            } else {
+                                let display_name = truncate_to_width(ui, &entry.name, &name_font, avail_name_w);
+                                let name_color = if is_sel { c.accent() } else { c.text_primary() };
+                                painter.text(
+                                    Pos2::new(name_left, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    display_name,
+                                    name_font,
+                                    name_color,
+                                );
+                            }
+                        }
+
+                        if !state.drag.dragging && !is_renaming && resp.hovered() {
+                            attach_delayed_hover_tooltip(&resp, ui, t, entry, is_sel);
+                        }
+
+                        // Interactions
+                        if resp.clicked() && !is_renaming {
+                            let modifiers = ui.input(|i| i.modifiers);
+                            let is_ctrl = modifiers.ctrl || modifiers.command;
+                            let is_shift = modifiers.shift;
+                            if is_ctrl && !is_shift {
+                                state.selection.toggle(entry.path.clone());
+                            } else if is_shift {
+                                let anchor = state.selection.anchor.clone()
+                                    .or_else(|| state.selection.last_clicked.clone())
+                                    .unwrap_or_else(|| entry.path.clone());
+                                state.selection.select_range(entries, &anchor, &entry.path, is_ctrl);
+                            } else {
+                                state.selection.select_only(entry.path.clone());
+                            }
+                        }
+
+                        if resp.double_clicked() && !is_renaming {
+                            open_entry(state, entry);
+                        }
+
+                        if resp.secondary_clicked() {
+                            let pos = ui.ctx().pointer_interact_pos().unwrap_or_else(|| rect.center());
+                            if !state.selection.is_selected(&entry.path) {
+                                state.selection.select_only(entry.path.clone());
+                            }
+                            state.panels.context_menu = Some(ContextMenuState {
+                                x: pos.x, y: pos.y, target: Some(entry.clone()),
+                            });
+                        }
+
+                        if resp.drag_started() {
+                            if !state.selection.is_selected(&entry.path) {
+                                state.selection.select_only(entry.path.clone());
+                            }
+                            let sources = state.selection.paths();
+                            let copy = ui.input(|i| i.modifiers.ctrl);
+                            spawn_native_drag(&sources);
+                            state.drag.start(sources, copy);
+                        }
+
+                        // Drop target for folders
+                        let is_pointer_over = ui.ctx().pointer_interact_pos()
+                            .or_else(|| ui.ctx().pointer_hover_pos())
+                            .map(|p| rect.contains(p))
+                            .unwrap_or(false);
+
+                        if state.drag.dragging && entry.is_dir && is_pointer_over {
+                            state.drag.target_dir = Some(entry.path.clone());
+                            ui.painter().rect_stroke(rect, Rounding::same(s.radius_sm), Stroke::new(2.0_f32, c.accent()));
+                            if ui.input(|i| i.pointer.any_released()) {
+                                let dest = entry.path.clone();
+                                let sources = state.drag.sources.clone();
+                                let copy = state.drag.copy_mode;
+                                state.drag.cancel();
+                                if !sources.contains(&dest) {
+                                    state.start_transfer(sources, dest, copy);
+                                }
+                            }
+                        }
+                    }
+                });
+                ui.add_space(row_gap);
+            }
+
+            // Update rubber band selection
+            if let Some(rb_rect) = active_rb_rect {
+                let ctrl_active = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                let shift_active = ui.input(|i| i.modifiers.shift);
+                let initial_sel: std::collections::HashSet<String> = ui.ctx().data_mut(|d| d.get_temp(rb_init_sel_id)).unwrap_or_default();
+
+                let mut next_sel = if ctrl_active || shift_active {
+                    initial_sel
+                } else {
+                    std::collections::HashSet::new()
+                };
+
+                for entry in entries {
+                    let item_rect_id = Id::new(format!("item_rect_{}", entry.path));
+                    if let Some(r) = ui.ctx().data_mut(|d| d.get_temp::<Rect>(item_rect_id)) {
+                        if rb_rect.intersects(r) {
+                            next_sel.insert(entry.path.clone());
+                        }
+                    }
+                }
+                state.selection.selected = next_sel;
+            }
+
+            ui.ctx().data_mut(|d| d.insert_temp(rects_cache_id, current_frame_rects));
+
+            // Empty background click area
+            let avail_h = ui.available_height().max(80.0);
+            let (_empty_rect, empty_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail_h), Sense::click());
+            if empty_resp.clicked() && !ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.shift) {
+                state.selection.clear();
+            }
+            if empty_resp.secondary_clicked() {
+                if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                    state.panels.context_menu = Some(ContextMenuState { x: pos.x, y: pos.y, target: None });
+                }
             }
         });
 }
@@ -2077,29 +2519,7 @@ pub fn open_entry(state: &mut AppState, entry: &FileEntry) {
 }
 
 fn icon_color_for(t: &AexTheme, entry: &FileEntry) -> Color32 {
-    let c = &t.colors;
-    if entry.is_dir {
-        return c.accent();
-    }
-    let ext = entry.extension.to_lowercase();
-    if matches!(ext.as_str(), "exe" | "msi" | "dll" | "bat" | "cmd" | "reg") {
-        return Color32::from_rgb(0, 164, 239); // Microsoft Blue
-    }
-    if entry.is_executable && ext.is_empty() {
-        return c.accent();
-    }
-    match ext.as_str() {
-        "png"|"jpg"|"jpeg"|"gif"|"webp"|"svg" => Color32::from_rgb(180, 140, 220),
-        "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"  => Color32::from_rgb(220, 140, 140),
-        "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma" => Color32::from_rgb(140, 200, 180),
-        "pdf"                                 => Color32::from_rgb(220, 100, 100),
-        "zip"|"tar"|"gz"|"7z"|"rar"           => Color32::from_rgb(200, 180, 120),
-        "rs"                                  => Color32::from_rgb(220, 130, 80),
-        "py"                                  => Color32::from_rgb(100, 160, 220),
-        "js"|"ts"                             => Color32::from_rgb(220, 200, 80),
-        "sh"                                  => Color32::from_rgb(100, 200, 120),
-        _                                     => c.text_secondary(),
-    }
+    crate::ui::icon_color_for_entry(t, entry)
 }
 
 pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
@@ -2402,9 +2822,10 @@ fn draw_grid_thumbnail(
 
     if !is_media || entry.is_dir { return false; }
 
-    let max_thumb_w = (item_w - 12.0).max(32.0);
-    let max_thumb_h = (item_h * 0.50).max(32.0);
-    let thumb_center = rect.min + Vec2::new(item_w / 2.0, item_h * 0.35);
+    let icon_area_h = (item_h * 0.52).round();
+    let max_thumb_w = (item_w - 12.0).max(24.0);
+    let max_thumb_h = (icon_area_h - 6.0).max(24.0);
+    let thumb_center = rect.min + Vec2::new(item_w / 2.0, 3.0 + max_thumb_h / 2.0);
     let tint = Color32::from_rgba_unmultiplied(255, 255, 255,
         if is_cut { 102 } else { (255.0 * opacity) as u8 });
 
@@ -2757,8 +3178,15 @@ pub fn render_snapshot_tagged(
                                 let handle: Option<egui::TextureHandle> =
                                     ui.ctx().data_mut(|d| d.get_temp(th_id));
                                 if let Some(ref h) = handle {
+                                    let tex_sz = h.size();
+                                    let aspect = if tex_sz[1] > 0 { tex_sz[0] as f32 / tex_sz[1] as f32 } else { 1.0 };
+                                    let (fit_w, fit_h) = if aspect >= 1.0 {
+                                        (th_sz, (th_sz / aspect).max(1.0))
+                                    } else {
+                                        ((th_sz * aspect).max(1.0), th_sz)
+                                    };
                                     let tr = Rect::from_center_size(
-                                        Pos2::new(icon_cx, rect.center().y), Vec2::splat(th_sz));
+                                        Pos2::new(icon_cx, rect.center().y), Vec2::new(fit_w, fit_h));
                                     ui.painter().image(h.id(), tr,
                                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                                     drew_thumb = true;
@@ -2915,30 +3343,133 @@ mod tests {
     }
 
     #[test]
-    fn test_windows_icon_and_color() {
+    fn test_distinct_extension_icons_and_colors() {
         let theme = crate::theme::defaults::default_theme();
-        let exe_entry = FileEntry {
-            name: "setup.exe".to_string(),
-            path: "/tmp/setup.exe".to_string(),
+        let make_entry = |name: &str, ext: &str, is_exec: bool| FileEntry {
+            name: name.to_string(),
+            path: format!("/tmp/{}", name),
             is_dir: false,
             is_symlink: false,
             size: 1024,
             modified: "".to_string(),
             created: "".to_string(),
             permissions: "rwxr-xr-x".to_string(),
-            mime_type: "application/x-dosexec".to_string(),
-            extension: "exe".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            extension: ext.to_string(),
             hidden: false,
-            is_executable: true,
+            is_executable: is_exec,
         };
 
-        // File icon should NOT be exec/console, but Windows!
-        let ic = crate::ui::file_icon(&theme, &exe_entry);
-        assert_eq!(ic, crate::ui::icon(&theme, "windows"));
+        let exe_entry = make_entry("setup.exe", "exe", true);
+        let dll_entry = make_entry("lib.dll", "dll", false);
+        let msi_entry = make_entry("installer.msi", "msi", false);
+        let bat_entry = make_entry("script.bat", "bat", true);
+        let reg_entry = make_entry("settings.reg", "reg", false);
+        let unk_entry = make_entry("unknown.xyz123", "xyz123", false);
 
-        // Icon color should be Microsoft Blue
-        let col = icon_color_for(&theme, &exe_entry);
-        assert_eq!(col, Color32::from_rgb(0, 164, 239));
+        // Distinct icons
+        assert_eq!(crate::ui::file_icon(&theme, &exe_entry), crate::ui::icon(&theme, "exe"));
+        assert_eq!(crate::ui::file_icon(&theme, &dll_entry), crate::ui::icon(&theme, "dll"));
+        assert_eq!(crate::ui::file_icon(&theme, &msi_entry), crate::ui::icon(&theme, "msi"));
+        assert_eq!(crate::ui::file_icon(&theme, &bat_entry), crate::ui::icon(&theme, "bat"));
+        assert_eq!(crate::ui::file_icon(&theme, &reg_entry), crate::ui::icon(&theme, "reg"));
+        // Unknown extension gets fallback dog-eared paper
+        assert_eq!(crate::ui::file_icon(&theme, &unk_entry), crate::ui::icon(&theme, "file"));
+
+        // Distinct colors
+        assert_eq!(icon_color_for(&theme, &exe_entry), Color32::from_rgb(0, 180, 240));
+        assert_eq!(icon_color_for(&theme, &dll_entry), Color32::from_rgb(180, 100, 240));
+        assert_eq!(icon_color_for(&theme, &msi_entry), Color32::from_rgb(245, 140, 40));
+        assert_eq!(icon_color_for(&theme, &bat_entry), Color32::from_rgb(80, 200, 120));
+        assert_eq!(icon_color_for(&theme, &reg_entry), Color32::from_rgb(40, 200, 190));
+        assert_eq!(icon_color_for(&theme, &unk_entry), theme.colors.text_secondary());
+    }
+
+    #[test]
+    fn test_windows_icon_and_color() {
+        test_distinct_extension_icons_and_colors();
+    }
+
+    #[test]
+    fn test_format_nemo_size() {
+        assert_eq!(format_nemo_size(500), "500 B");
+        assert_eq!(format_nemo_size(1024), "1.0 kB");
+        assert_eq!(format_nemo_size(74137), "72.4 kB");
+        assert_eq!(format_nemo_size(1048576), "1.0 MB");
+        assert_eq!(format_nemo_size(1073741824), "1.0 GB");
+    }
+
+    #[test]
+    fn test_entry_type_label() {
+        let make_entry = |ext: &str, is_dir: bool| FileEntry {
+            name: "test".to_string(),
+            path: "/tmp/test".to_string(),
+            is_dir,
+            is_symlink: false,
+            size: 100,
+            modified: "".to_string(),
+            created: "".to_string(),
+            permissions: "rwxr-xr-x".to_string(),
+            mime_type: "".to_string(),
+            extension: ext.to_string(),
+            hidden: false,
+            is_executable: false,
+        };
+
+        assert_eq!(entry_type_label(&make_entry("", true)), "Folder");
+        assert_eq!(entry_type_label(&make_entry("png", false)), "Image");
+        assert_eq!(entry_type_label(&make_entry("jpg", false)), "Image");
+        assert_eq!(entry_type_label(&make_entry("webp", false)), "Image");
+        assert_eq!(entry_type_label(&make_entry("mp4", false)), "Video");
+        assert_eq!(entry_type_label(&make_entry("mp3", false)), "Audio");
+        assert_eq!(entry_type_label(&make_entry("pdf", false)), "PDF Document");
+        assert_eq!(entry_type_label(&make_entry("zip", false)), "Archive");
+        assert_eq!(entry_type_label(&make_entry("rs", false)), "Document");
+    }
+
+    #[test]
+    fn test_list_view_aspect_ratio_fitting() {
+        let th_sz: f32 = 32.0;
+
+        // Landscape image (16:9, e.g. 1920x1080)
+        let aspect_landscape: f32 = 1920.0 / 1080.0;
+        let (fit_w, fit_h) = if aspect_landscape >= 1.0 {
+            (th_sz, (th_sz / aspect_landscape).max(1.0_f32))
+        } else {
+            ((th_sz * aspect_landscape).max(1.0_f32), th_sz)
+        };
+        assert_eq!(fit_w, 32.0);
+        assert!((fit_h - 18.0).abs() < 1.0); // 32 / 1.777 = 18.0
+
+        // Portrait image (9:16, e.g. 1080x1920)
+        let aspect_portrait: f32 = 1080.0 / 1920.0;
+        let (fit_w, fit_h) = if aspect_portrait >= 1.0 {
+            (th_sz, (th_sz / aspect_portrait).max(1.0_f32))
+        } else {
+            ((th_sz * aspect_portrait).max(1.0_f32), th_sz)
+        };
+        assert_eq!(fit_h, 32.0);
+        assert!((fit_w - 18.0).abs() < 1.0); // 32 * 0.5625 = 18.0
+
+        // Square image (1:1)
+        let aspect_square: f32 = 1.0;
+        let (fit_w, fit_h) = if aspect_square >= 1.0 {
+            (th_sz, (th_sz / aspect_square).max(1.0_f32))
+        } else {
+            ((th_sz * aspect_square).max(1.0_f32), th_sz)
+        };
+        assert_eq!(fit_w, 32.0);
+        assert_eq!(fit_h, 32.0);
+    }
+
+    #[test]
+    fn test_media_grid_style_toggle() {
+        let mut state = AppState::new();
+        assert_eq!(state.media_grid_style, MediaGridStyle::NemoGrid);
+        state.set_media_grid_style(MediaGridStyle::Masonry);
+        assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
+        state.set_media_grid_style(MediaGridStyle::NemoGrid);
+        assert_eq!(state.media_grid_style, MediaGridStyle::NemoGrid);
     }
 }
 

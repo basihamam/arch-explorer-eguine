@@ -15,9 +15,9 @@ use std::fs;
 pub fn theme_search_paths() -> Vec<PathBuf> {
     let mut paths = vec![];
 
-    // 1. ~/.config/arch-explorer/themes/
-    if let Some(cfg) = dirs::config_dir() {
-        paths.push(cfg.join("arch-explorer").join("themes"));
+    // 1. ~/.config/arch-explorer/themes/ (otomatik oluşturulur)
+    if let Some(user_themes) = custom_themes_dir() {
+        paths.push(user_themes);
     }
 
     // 2. ~/.local/share/arch-explorer/themes/
@@ -36,6 +36,17 @@ pub fn theme_search_paths() -> Vec<PathBuf> {
     }
 
     paths
+}
+
+/// Custom themes directory: ~/.config/arch-explorer/themes/
+pub fn custom_themes_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|cfg| {
+        let dir = cfg.join("arch-explorer").join("themes");
+        if !dir.exists() {
+            let _ = fs::create_dir_all(&dir);
+        }
+        dir
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,6 +167,9 @@ pub struct ThemeEngine {
 impl ThemeEngine {
     /// Ayar dosyasından tema adını oku ve yükle, yoksa default
     pub fn init() -> Self {
+        // Özel temalar klasörünün (~/.config/arch-explorer/themes/) varlığından emin ol
+        let _ = custom_themes_dir();
+
         let active_id = load_saved_theme_name().unwrap_or_else(|| "default".into());
         let active = load_theme_by_name(&active_id)
             .unwrap_or_else(|| defaults::default_theme());
@@ -349,6 +363,39 @@ pub fn save_dir_view_mode(dir_path: &str, mode: &str) {
 
     modes_table.insert(key.to_string(), toml::Value::String(mode.to_string()));
     table.insert("dir_view_modes".to_string(), toml::Value::Table(modes_table));
+
+    if let Ok(serialized) = toml::to_string_pretty(&table) {
+        fs::write(&path, serialized).ok();
+    }
+}
+
+pub fn load_saved_media_grid_style() -> Option<crate::state::MediaGridStyle> {
+    let content = fs::read_to_string(settings_path()).ok()?;
+    let table: toml::Table = toml::from_str(&content).ok()?;
+    let val = table.get("media_grid_style")?.as_str()?;
+    match val {
+        "masonry" => Some(crate::state::MediaGridStyle::Masonry),
+        "nemo" | "nemogrid" | "nemo_grid" => Some(crate::state::MediaGridStyle::NemoGrid),
+        _ => None,
+    }
+}
+
+pub fn save_media_grid_style(style: crate::state::MediaGridStyle) {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    let mut table: toml::Table = fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| toml::from_str(&c).ok())
+        .unwrap_or_default();
+
+    let str_val = match style {
+        crate::state::MediaGridStyle::Masonry => "masonry",
+        crate::state::MediaGridStyle::NemoGrid => "nemo_grid",
+    };
+    table.insert("media_grid_style".to_string(), toml::Value::String(str_val.to_string()));
 
     if let Ok(serialized) = toml::to_string_pretty(&table) {
         fs::write(&path, serialized).ok();
@@ -656,6 +703,38 @@ pub mod defaults {
         t
     }
 
+    pub fn agnes_tachyon() -> AexTheme {
+        let mut t = AexTheme::default();
+        t.meta.name = "Agnes Tachyon".into();
+        t.meta.author = "Uma Musume / Tachyon Lab".into();
+        t.meta.description = "Bioluminescent electric cyan & potion amber theme for the eccentric mad scientist".into();
+        t.colors.bg_base        = "#0e1117".into();
+        t.colors.bg_mantle      = "#0a0d14".into();
+        t.colors.bg_crust       = "#06080d".into();
+        t.colors.bg_surface0    = "#1b1e2e".into();
+        t.colors.bg_surface1    = "#262a40".into();
+        t.colors.bg_surface2    = "#363c5a".into();
+        t.colors.accent         = "#00f5d4".into(); // bioluminescent electric cyan
+        t.colors.accent_dim     = "#ff9e00".into(); // glowing amber test-tube potion
+        t.colors.accent_glow    = "#00f5d430".into();
+        t.colors.text_primary   = "#f0f3f8".into();
+        t.colors.text_secondary = "#a6b0cf".into();
+        t.colors.text_hint      = "#677196".into();
+        t.colors.text_disabled  = "#3e4460".into();
+        t.colors.success        = "#00f5d4".into();
+        t.colors.warning        = "#ff9e00".into();
+        t.colors.danger         = "#ff3366".into();
+        t.colors.info           = "#b5179e".into(); // neon purple/violet
+        t.colors.border         = "#262a40".into();
+        t.colors.border_focus   = "#00f5d4".into();
+        t.effects.window_opacity  = 0.88;
+        t.effects.sidebar_opacity = 0.78;
+        t.effects.panel_opacity   = 0.90;
+        t.effects.card_opacity    = 0.84;
+        t.effects.toolbar_opacity = 0.82;
+        t
+    }
+
     pub fn builtin_themes() -> HashMap<String, AexTheme> {
         let mut map = HashMap::new();
         map.insert("default".into(),           default_theme());
@@ -668,6 +747,7 @@ pub mod defaults {
         map.insert("nord".into(),              nord());
         map.insert("gruvbox".into(),           gruvbox());
         map.insert("rose-pine".into(),         rose_pine());
+        map.insert("agnes-tachyon".into(),     agnes_tachyon());
         map
     }
 }
@@ -850,5 +930,20 @@ mod tests {
         let style = egui_bridge::aex_to_egui_style(&theme);
         assert_eq!(style.visuals.window_fill.a(), (0.85 * 255.0) as u8);
         assert_eq!(style.visuals.panel_fill.a(), (0.90 * 255.0) as u8);
+    }
+
+    #[test]
+    fn test_agnes_tachyon_theme() {
+        let builtins = defaults::builtin_themes();
+        let agnes = builtins.get("agnes-tachyon").expect("agnes-tachyon theme must be present");
+        assert_eq!(agnes.meta.name, "Agnes Tachyon");
+        assert_eq!(agnes.colors.accent, "#00f5d4");
+        assert_eq!(agnes.colors.accent_dim, "#ff9e00");
+        assert_eq!(agnes.colors.bg_base, "#0e1117");
+        assert_eq!(agnes.effects.window_opacity, 0.88);
+        assert_eq!(agnes.effects.sidebar_opacity, 0.78);
+        assert_eq!(agnes.effects.panel_opacity, 0.90);
+        assert_eq!(agnes.effects.card_opacity, 0.84);
+        assert_eq!(agnes.effects.toolbar_opacity, 0.82);
     }
 }

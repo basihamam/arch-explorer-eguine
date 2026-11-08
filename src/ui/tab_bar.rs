@@ -253,14 +253,15 @@ pub fn render_tab_half(
 
             // Drag & Drop onto Tab: Highlight and Drop
             let is_dragging = ui.ctx().data_mut(|d| d.get_temp::<bool>(Id::new("is_file_dragging")).unwrap_or(false));
-            let is_drag_over = is_dragging && resp.hovered();
+            let is_tab_hovered = resp.hovered() || ui.rect_contains_pointer(rect);
+            let is_drag_over = is_dragging && is_tab_hovered;
 
             // 1. Tab Background
             let bg = if is_drag_over {
                 Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 80)
             } else if is_active_tab && is_pane_active {
                 c.bg_surface0()
-            } else if resp.hovered() {
+            } else if is_tab_hovered {
                 Color32::from_rgba_unmultiplied(c.bg_surface0().r(), c.bg_surface0().g(), c.bg_surface0().b(), 60)
             } else {
                 Color32::TRANSPARENT
@@ -272,7 +273,7 @@ pub fn render_tab_half(
             }
 
             // Drop release on tab
-            if is_dragging && resp.hovered() && ui.input(|i| i.pointer.any_released()) && action.is_none() {
+            if is_dragging && is_tab_hovered && ui.input(|i| i.pointer.any_released()) && action.is_none() {
                 *action = Some(TabBarAction::DropFiles { dest_path: tab.path.clone() });
             }
 
@@ -336,7 +337,7 @@ pub fn render_tab_half(
             );
 
             // 6. Close button ✕
-            if tabs.len() > 1 && (resp.hovered() || (is_active_tab && is_pane_active)) {
+            if tabs.len() > 1 && (is_tab_hovered || (is_active_tab && is_pane_active)) {
                 let close_size = 20.0_f32;
                 let close_rect = Rect::from_center_size(
                     Pos2::new(rect.right() - 14.0, rect.center().y),
@@ -659,5 +660,23 @@ mod tests {
         assert!(state.drag.dragging);
         apply_tab_action(&mut state, TabBarAction::DropFiles { dest_path: "/home/user".into() });
         assert!(!state.drag.dragging);
+    }
+
+    #[test]
+    fn test_inactive_tab_close_hover_no_flicker() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let t = AexTheme::default();
+                let mut state = AppState::new();
+                state.tabs.new_tab("/home/user/tab2".to_string());
+                assert_eq!(state.tabs.len(), 2);
+                assert_eq!(state.tabs.active_idx, 1);
+
+                // Render with inactive tab (idx 0)
+                let mut action = None;
+                render_tab_half(ui, &t, &state.tabs, true, true, 400.0, 34.0, &mut action);
+            });
+        });
     }
 }

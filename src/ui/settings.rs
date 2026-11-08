@@ -226,27 +226,54 @@ fn tab_appearance(ui: &mut Ui, t: &AexTheme, state: &mut AppState, engine: &mut 
         }
     };
 
-    // Refresh butonu — manuel yenile
-    if ui.add(egui::Button::new(
-        RichText::new(format!("{} Refresh themes", icon(t, "refresh")))
-            .color(t.colors.text_hint()).size(t.typography.size_xs))
-        .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
-        engine.refresh_available();
-        let t_list = engine.available.clone();
-        ui.ctx().data_mut(|d| d.insert_temp(themes_cache_id, t_list));
-    }
+    // Action buttons: Refresh themes + Open Themes Folder
+    ui.horizontal(|ui| {
+        if ui.add(egui::Button::new(
+            RichText::new(format!("{} Refresh themes", icon(t, "refresh")))
+                .color(t.colors.text_hint()).size(t.typography.size_xs))
+            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
+            engine.refresh_available();
+            let t_list = engine.available.clone();
+            ui.ctx().data_mut(|d| d.insert_temp(themes_cache_id, t_list));
+        }
+
+        ui.add_space(sp.sm);
+
+        if ui.add(egui::Button::new(
+            RichText::new(format!("{} Open Themes Folder", icon(t, "folder")))
+                .color(t.colors.text_hint()).size(t.typography.size_xs))
+            .fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+            .on_hover_text("Open ~/.config/arch-explorer/themes/ to drop custom .aex theme files")
+            .clicked() {
+            if let Some(dir) = crate::theme::custom_themes_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&dir)
+                    .spawn();
+            }
+        }
+    });
     ui.add_space(sp.xs);
 
     let ctx = ui.ctx().clone();
+    let mut switched_theme: Option<String> = None;
+
     for theme_meta in &themes {
         let is_active = engine.active_id == theme_meta.id;
         theme_card(ui, t, theme_meta, is_active, || {
-            engine.switch_to(&theme_meta.id, &ctx);
-            // Refresh cache after switch
-            ctx.data_mut(|d| d.remove::<Vec<crate::theme::ThemeMeta>>(themes_cache_id));
-            ctx.request_repaint();
+            switched_theme = Some(theme_meta.id.clone());
         });
         ui.add_space(sp.xs);
+    }
+
+    if let Some(new_theme_id) = switched_theme {
+        engine.switch_to(&new_theme_id, &ctx);
+        // Refresh cache after switch
+        ctx.data_mut(|d| {
+            d.remove::<Vec<crate::theme::ThemeMeta>>(themes_cache_id);
+            d.remove_by_type::<Vec<crate::theme::ThemeMeta>>();
+        });
+        ctx.request_repaint();
     }
 
     ui.add_space(sp.md);
@@ -359,62 +386,96 @@ fn tab_appearance(ui: &mut Ui, t: &AexTheme, state: &mut AppState, engine: &mut 
     });
 }
 
-fn theme_card(ui: &mut Ui, t: &AexTheme, meta: &ThemeMeta, is_active: bool, on_select: impl FnOnce()) {
+fn theme_card(ui: &mut Ui, t: &AexTheme, meta: &ThemeMeta, is_active: bool, mut on_select: impl FnMut()) {
     let c  = &t.colors;
     let s  = &t.shape;
     let sp = &t.spacing;
 
-    let mut selected = false;
+    ui.push_id(&meta.id, |ui| {
+        let row_height = 54.0_f32;
+        let (card_rect, card_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
 
-    let resp = egui::Frame {
-        fill: if is_active {
-            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 25)
+        let is_hovered = card_resp.hovered();
+        if !is_active {
+            card_resp.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+
+        let bg = if is_active {
+            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 28)
+        } else if is_hovered {
+            c.bg_surface1()
         } else {
             c.bg_surface0()
-        },
-        rounding: Rounding::same(s.radius_md),
-        stroke: Stroke::new(if is_active { 1.5 } else { 1.0 }, if is_active { c.accent() } else { c.border() }),
-        inner_margin: Margin::symmetric(sp.md, sp.sm),
-        ..Default::default()
-    }
-    .show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(&meta.name)
-                        .color(if is_active { c.accent() } else { c.text_primary() })
-                        .size(t.typography.size_sm)
-                        .strong()
-                );
-                ui.label(
-                    RichText::new(format!("by {}  {}", meta.author,
-                        if meta.builtin { "• built-in" } else { "• custom" }))
-                        .color(c.text_hint())
-                        .size(t.typography.size_xs)
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if is_active {
-                    ui.label(RichText::new(format!("{} Active", super::icon(t, "check"))).color(c.accent()).size(t.typography.size_xs));
-                } else {
-                    if ui.add(
-                        egui::Button::new(RichText::new("Apply").size(t.typography.size_sm))
-                            .fill(c.bg_surface1())
-                            .stroke(Stroke::new(1.0_f32, c.border()))
-                            .rounding(Rounding::same(s.radius_sm))
-                    ).clicked() {
-                        selected = true;
-                    }
-                }
-            });
-        });
-    });
+        };
 
-    let card_click = ui.interact(resp.response.rect, resp.response.id, Sense::click());
-    if (card_click.clicked() || selected) && !is_active {
-        on_select();
-    }
+        let stroke = if is_active {
+            Stroke::new(1.5_f32, c.accent())
+        } else if is_hovered {
+            Stroke::new(1.0_f32, c.accent_dim())
+        } else {
+            Stroke::new(1.0_f32, c.border())
+        };
+
+        ui.painter().rect(card_rect, Rounding::same(s.radius_md), bg, stroke);
+
+        if is_active {
+            let bar = Rect::from_min_size(
+                card_rect.min + Vec2::new(0.0, 6.0),
+                Vec2::new(3.0, card_rect.height() - 12.0),
+            );
+            ui.painter().rect_filled(bar, Rounding::same(1.5), c.accent());
+        }
+
+        let content_rect = card_rect.shrink2(Vec2::new(sp.md, sp.sm));
+        let mut child_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(content_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+
+        child_ui.vertical(|ui| {
+            ui.label(
+                RichText::new(&meta.name)
+                    .color(if is_active { c.accent() } else { c.text_primary() })
+                    .size(t.typography.size_sm)
+                    .strong(),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "by {}  {}",
+                    meta.author,
+                    if meta.builtin { "• built-in" } else { "• custom" }
+                ))
+                .color(c.text_hint())
+                .size(t.typography.size_xs),
+            );
+        });
+
+        let mut apply_clicked = false;
+        child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if is_active {
+                ui.label(
+                    RichText::new(format!("{} Active", super::icon(t, "check")))
+                        .color(c.accent())
+                        .size(t.typography.size_xs)
+                        .strong(),
+                );
+            } else {
+                let apply_btn = egui::Button::new(RichText::new("Apply").size(t.typography.size_sm))
+                    .fill(if is_hovered { c.bg_surface2() } else { c.bg_surface1() })
+                    .stroke(Stroke::new(1.0_f32, c.border()))
+                    .rounding(Rounding::same(s.radius_sm));
+
+                if ui.add(apply_btn).clicked() {
+                    apply_clicked = true;
+                }
+            }
+        });
+
+        if (card_resp.clicked() || apply_clicked) && !is_active {
+            on_select();
+        }
+    });
 }
 
 // ── Layout Tab ────────────────────────────────────────────────────────────────

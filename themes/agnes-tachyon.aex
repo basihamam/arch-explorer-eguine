@@ -1,0 +1,40 @@
+[meta]
+name        = "Agnes Tachyon"
+author      = "Uma Musume / Tachyon Lab"
+version     = "1.0.0"
+description = "Bioluminescent electric cyan & potion amber theme for the eccentric mad scientist"
+
+[colors]
+bg_base        = "#0e1117"
+bg_mantle      = "#0a0d14"
+bg_crust       = "#06080d"
+bg_surface0    = "#1b1e2e"
+bg_surface1    = "#262a40"
+bg_surface2    = "#363c5a"
+accent         = "#00f5d4"
+accent_dim     = "#ff9e00"
+accent_glow    = "#00f5d430"
+text_primary   = "#f0f3f8"
+text_secondary = "#a6b0cf"
+text_hint      = "#677196"
+text_disabled  = "#3e4460"
+success        = "#00f5d4"
+warning        = "#ff9e00"
+danger         = "#ff3366"
+info           = "#b5179e"
+border         = "#262a40"
+border_focus   = "#00f5d4"
+
+[effects]
+window_opacity  = 0.88
+sidebar_opacity = 0.78
+panel_opacity   = 0.90
+card_opacity    = 0.84
+toolbar_opacity = 0.82
+blur_radius     = 16
+glass_panels    = true
+shadow_enabled  = true
+shadow_offset_x = 0.0
+shadow_offset_y = 8.0
+shadow_blur     = 24.0
+shadow_color    = "#00000060"

@@ -66,6 +66,8 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "mount"        => "\u{f0a0}",
             "list"         => "\u{f03a}",
             "grid"         => "\u{f00a}",
+            "compact"      => "\u{f0db}",
+            "more" | "dots" => "\u{f142}",
             "visible"      => "\u{f06e}",
             "hidden"       => "\u{f070}",
             "check" | "success" => "\u{f00c}",
@@ -75,6 +77,11 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "android"      => "\u{f17b}", //  Android robot
             "exec"         => "\u{f489}", // terminal / executable gear
             "binary"       => "\u{f489}",
+            "exe"          => "\u{f013}", // dedicated executable gear icon
+            "dll"          => "\u{f085}", // cogs / library icon
+            "msi"          => "\u{f1b2}", // package / installer box
+            "bat" | "cmd"  => "\u{f120}", // batch / terminal script
+            "reg"          => "\u{f084}", // registry key icon
             "doc"          => "\u{f1c2}",
             "sheet"        => "\u{f1c3}",
             "slide"        => "\u{f1c4}",
@@ -89,11 +96,12 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "cpp"          => "\u{e61d}",
             "database"     => "\u{f1c0}",
             "font"         => "\u{f031}",
-            _              => "\u{f15b}",
+            _              => "\u{f15b}", // fallback dog-eared paper icon 
         },
         IconStyle::Emoji => match name {
             "folder"       => "📁",
             "folder_open"  => "📂",
+            "file"         => "📄", // dog-eared paper
             "image"        => "🖼",
             "video"        => "🎬",
             "audio"        => "🎵",
@@ -101,6 +109,11 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "terminal"     => "💻",
             "exec"         => "⚙️",
             "binary"       => "⚙️",
+            "exe"          => "⚙️",
+            "dll"          => "🧩",
+            "msi"          => "📦",
+            "bat" | "cmd"  => "📜",
+            "reg"          => "🔑",
             "delete"       => "🗑",
             "trash"        => "🗑",
             "star"         => "⭐",
@@ -117,13 +130,23 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "copy"         => "📋",
             "rename"       => "✏",
             "check" | "success" => "✓",
-            _              => "📄",
+            "compact"      => "📑",
+            "more" | "dots" => "⋮",
+            _              => "📄", // dog-eared paper
         },
         IconStyle::Minimal => match name {
+            "compact"     => "[C]",
+            "more" | "dots" => "[:]",
             "folder"      => "[D]",
             "folder_open" => "[O]",
+            "file"        => "[F]",
             "exec"        => "[!]",
             "binary"      => "[!]",
+            "exe"         => "[X]",
+            "dll"         => "[L]",
+            "msi"         => "[P]",
+            "bat" | "cmd" => "[S]",
+            "reg"         => "[K]",
             "delete"      => "[X]",
             "trash"       => "[X]",
             "copy"        => "[C]",
@@ -137,64 +160,78 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "ntfs"        => "[W]",
             "windows"     => "[W]",
             "check" | "success" => "[V]",
-            _             => "[ ]",
+            _             => "[F]", // fallback dog-eared paper [F]
         },
     }
 }
 
-// ── File-type icon string (returns String — fine for label/text uses) ─────────
+// ── File-type icon string (returns &'static str) ──────────────────────────────
 pub fn file_icon(t: &AexTheme, e: &FileEntry) -> &'static str {
     if e.is_dir { return icon(t, "folder"); }
     let ext = std::path::Path::new(&e.name)
         .extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+    let ext_str = if ext.is_empty() { e.extension.to_lowercase() } else { ext };
 
-    // Windows executables & libraries get the dedicated Windows icon (NOT the console icon!)
-    if matches!(ext.as_str(), "exe" | "msi" | "dll" | "bat" | "cmd" | "reg" | "scr") {
-        return icon(t, "windows");
+    // Specific Windows / executable types (distinct icons!)
+    if ext_str == "exe" || ext_str == "scr" {
+        return icon(t, "exe");
+    }
+    if ext_str == "dll" {
+        return icon(t, "dll");
+    }
+    if ext_str == "msi" {
+        return icon(t, "msi");
+    }
+    if ext_str == "bat" || ext_str == "cmd" {
+        return icon(t, "bat");
+    }
+    if ext_str == "reg" {
+        return icon(t, "reg");
     }
 
     // Media
-    if matches!(ext.as_str(), "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg"|"tiff"|"avif") {
+    if matches!(ext_str.as_str(), "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg"|"tiff"|"avif") {
         return icon(t, "image");
     }
-    if matches!(ext.as_str(), "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts") {
+    if matches!(ext_str.as_str(), "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts") {
         return icon(t, "video");
     }
-    if matches!(ext.as_str(), "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma") {
+    if matches!(ext_str.as_str(), "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma") {
         return icon(t, "audio");
     }
-    if matches!(ext.as_str(), "zip"|"tar"|"gz"|"bz2"|"xz"|"zst"|"7z"|"rar"|"tgz"|"tbz2") {
+    if matches!(ext_str.as_str(), "zip"|"tar"|"gz"|"bz2"|"xz"|"zst"|"7z"|"rar"|"tgz"|"tbz2") {
         return icon(t, "archive");
     }
-    if matches!(ext.as_str(), "iso"|"img"|"dmg"|"qcow2"|"vdi") {
+    if matches!(ext_str.as_str(), "iso"|"img"|"dmg"|"qcow2"|"vdi") {
         return icon(t, "disk");
     }
 
     // Documents
-    if ext == "pdf" { return icon(t, "pdf"); }
-    if matches!(ext.as_str(), "doc"|"docx"|"odt"|"rtf") { return icon(t, "doc"); }
-    if matches!(ext.as_str(), "xls"|"xlsx"|"ods"|"csv"|"tsv") { return icon(t, "sheet"); }
-    if matches!(ext.as_str(), "ppt"|"pptx"|"odp") { return icon(t, "slide"); }
-    if matches!(ext.as_str(), "txt"|"log"|"nfo"|"md"|"markdown") { return icon(t, "text"); }
+    if ext_str == "pdf" { return icon(t, "pdf"); }
+    if matches!(ext_str.as_str(), "doc"|"docx"|"odt"|"rtf") { return icon(t, "doc"); }
+    if matches!(ext_str.as_str(), "xls"|"xlsx"|"ods"|"csv"|"tsv") { return icon(t, "sheet"); }
+    if matches!(ext_str.as_str(), "ppt"|"pptx"|"odp") { return icon(t, "slide"); }
+    if matches!(ext_str.as_str(), "txt"|"log"|"nfo"|"md"|"markdown") { return icon(t, "text"); }
 
     // Code & configs
-    if ext == "rs" { return icon(t, "rust"); }
-    if ext == "py" { return icon(t, "python"); }
-    if matches!(ext.as_str(), "js"|"mjs"|"cjs") { return icon(t, "js"); }
-    if matches!(ext.as_str(), "ts"|"tsx") { return icon(t, "ts"); }
-    if matches!(ext.as_str(), "html"|"htm") { return icon(t, "html"); }
-    if matches!(ext.as_str(), "css"|"scss"|"sass"|"less") { return icon(t, "css"); }
-    if ext == "json" { return icon(t, "json"); }
-    if ext == "c" || ext == "h" { return icon(t, "c"); }
-    if matches!(ext.as_str(), "cpp"|"hpp"|"cc"|"cxx") { return icon(t, "cpp"); }
-    if matches!(ext.as_str(), "db"|"sqlite"|"sqlite3"|"sql") { return icon(t, "database"); }
-    if matches!(ext.as_str(), "ttf"|"otf"|"woff"|"woff2") { return icon(t, "font"); }
-    if matches!(ext.as_str(), "toml"|"yaml"|"yml"|"ini"|"conf"|"cfg") { return icon(t, "settings"); }
-    if matches!(ext.as_str(), "sh"|"bash"|"zsh"|"fish") { return icon(t, "terminal"); }
+    if ext_str == "rs" { return icon(t, "rust"); }
+    if ext_str == "py" { return icon(t, "python"); }
+    if matches!(ext_str.as_str(), "js"|"mjs"|"cjs") { return icon(t, "js"); }
+    if matches!(ext_str.as_str(), "ts"|"tsx") { return icon(t, "ts"); }
+    if matches!(ext_str.as_str(), "html"|"htm") { return icon(t, "html"); }
+    if matches!(ext_str.as_str(), "css"|"scss"|"sass"|"less") { return icon(t, "css"); }
+    if ext_str == "json" { return icon(t, "json"); }
+    if ext_str == "c" || ext_str == "h" { return icon(t, "c"); }
+    if matches!(ext_str.as_str(), "cpp"|"hpp"|"cc"|"cxx") { return icon(t, "cpp"); }
+    if matches!(ext_str.as_str(), "db"|"sqlite"|"sqlite3"|"sql") { return icon(t, "database"); }
+    if matches!(ext_str.as_str(), "ttf"|"otf"|"woff"|"woff2") { return icon(t, "font"); }
+    if matches!(ext_str.as_str(), "toml"|"yaml"|"yml"|"ini"|"conf"|"cfg") { return icon(t, "settings"); }
+    if matches!(ext_str.as_str(), "sh"|"bash"|"zsh"|"fish") { return icon(t, "terminal"); }
 
     // Binary executables without extension
     if e.is_executable { return icon(t, "exec"); }
 
+    // Unregistered / unknown extensions: default dog-eared paper icon!
     icon(t, "file")
 }
 
@@ -205,19 +242,23 @@ pub fn icon_color_for_entry(t: &AexTheme, e: &FileEntry) -> egui::Color32 {
     if e.is_dir { return hex_to_color32(&c.accent); }
     let ext = std::path::Path::new(&e.name)
         .extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+    let ext_str = if ext.is_empty() { e.extension.to_lowercase() } else { ext };
 
-    if matches!(ext.as_str(), "exe" | "msi" | "dll" | "bat" | "cmd" | "reg") {
-        return egui::Color32::from_rgb(0, 164, 239); // Microsoft Blue
-    }
-    match ext.as_str() {
-        "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg" => hex_to_color32(&c.success),
-        "mp4"|"mkv"|"avi"|"mov"|"webm"                    => hex_to_color32(&c.warning),
-        "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma" => hex_to_color32(&c.info),
-        "zip"|"tar"|"gz"|"bz2"|"xz"|"7z"|"rar"           => hex_to_color32(&c.accent_dim),
+    match ext_str.as_str() {
+        "exe" | "scr"                                      => egui::Color32::from_rgb(0, 180, 240),   // Cyan / Blue
+        "dll"                                              => egui::Color32::from_rgb(180, 100, 240), // Purple / Magenta
+        "msi"                                              => egui::Color32::from_rgb(245, 140, 40),  // Orange / Amber
+        "bat" | "cmd"                                      => egui::Color32::from_rgb(80, 200, 120),  // Green script
+        "reg"                                              => egui::Color32::from_rgb(40, 200, 190),  // Teal / Yellow
+        "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg"  => hex_to_color32(&c.success),
+        "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts" => hex_to_color32(&c.warning),
+        "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma"  => hex_to_color32(&c.info),
+        "zip"|"tar"|"gz"|"bz2"|"xz"|"zst"|"7z"|"rar"      => hex_to_color32(&c.accent_dim),
         "pdf"                                              => hex_to_color32(&c.danger),
         "rs"                                               => egui::Color32::from_rgb(222, 114, 60),
         "py"                                               => egui::Color32::from_rgb(75, 139, 190),
         "js"|"ts"                                          => egui::Color32::from_rgb(240, 219, 79),
+        "sh"|"bash"|"zsh"|"fish"                           => egui::Color32::from_rgb(80, 200, 120),
         _ if e.is_executable                               => hex_to_color32(&c.accent),
         _                                                  => hex_to_color32(&c.text_secondary),
     }
