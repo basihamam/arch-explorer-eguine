@@ -89,6 +89,7 @@ pub struct ArchExplorer {
     tx: Sender<BackendMsg>,
     rx: Receiver<BackendMsg>,
     runtime: tokio::runtime::Runtime,
+    egui_ctx: egui::Context,
 
     // inotify watcher — drop edilirse izleme durur
     _watcher: Option<notify::RecommendedWatcher>,
@@ -131,6 +132,7 @@ impl ArchExplorer {
             theme,
             state: AppState::new(),
             tx, rx, runtime,
+            egui_ctx: cc.egui_ctx.clone(),
             _watcher: None,
             watched_paths: std::collections::HashSet::new(),
             last_sidebar_refresh: std::time::Instant::now(),
@@ -186,6 +188,7 @@ impl ArchExplorer {
         });
 
         app.load_current_directory();
+        app.sync_watchers();
         app.load_sidebar_data();
 
         app
@@ -264,7 +267,7 @@ impl ArchExplorer {
     // ── inotify watcher ──────────────────────────────────────────────────────
     // Sekmelerdeki veya mevcut dizindeki değişiklikleri izler ve ilgili sekmeleri günceller
 
-    fn sync_watchers(&mut self) {
+    pub fn sync_watchers(&mut self) {
         use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
         // İzlenmesi gereken tüm dizinleri topla (aktif sekmeler + mevcut yol)
@@ -291,7 +294,8 @@ impl ArchExplorer {
         let watcher_res = RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
-                    if let Some(p) = event.paths.first() {
+                    for p in &event.paths {
+                        // If a file or folder inside watched dir changes, send its directory!
                         let dir = if p.is_dir() {
                             p.to_string_lossy().to_string()
                         } else if let Some(parent) = p.parent() {
@@ -300,6 +304,11 @@ impl ArchExplorer {
                             p.to_string_lossy().to_string()
                         };
                         wtx.send(dir).ok();
+                        // ALSO: If p itself is a folder or file created inside a directory,
+                        // p.parent() is the containing folder that must refresh!
+                        if let Some(parent) = p.parent() {
+                            wtx.send(parent.to_string_lossy().to_string()).ok();
+                        }
                     }
                 }
             },
@@ -313,6 +322,7 @@ impl ArchExplorer {
             self._watcher = Some(watcher);
 
             // Debounce thread: 300ms beklendikten sonra DirectoryChanged(changed_dir) gönder
+            let ctx = self.egui_ctx.clone();
             std::thread::spawn(move || {
                 let mut last = std::time::Instant::now();
                 let mut pending_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -327,6 +337,7 @@ impl ArchExplorer {
                                 for dir in pending_dirs.drain() {
                                     tx.send(BackendMsg::DirectoryChanged(dir)).ok();
                                 }
+                                ctx.request_repaint();
                             }
                         }
                         Err(_) => break, // channel kapandı
@@ -679,6 +690,8 @@ impl ArchExplorer {
 
                     if matches_current {
                         self.state.pending_listing = Some(listing);
+                    } else if self.state.needs_reload {
+                        self.state.dir.is_loading = false;
                     }
                 }
                 BackendMsg::DirectoryError(e) => {
@@ -808,9 +821,8 @@ impl ArchExplorer {
                            == std::fs::canonicalize(chg_norm).map(|c| c.to_string_lossy().trim_end_matches('/').to_string()).unwrap_or_default();
 
                     if matches_current {
-                        if !self.state.dir.is_loading {
-                            self.state.needs_reload = true;
-                        }
+                        self.state.needs_reload = true;
+                        self.sync_watchers();
                     }
 
                     // Arka plandaki diğer sekmelerin önbelleğini de geçersiz kıl ki o sekmeye geçildiğinde eski liste kalmasın
@@ -973,8 +985,10 @@ impl eframe::App for ArchExplorer {
 
         // 3. Yeniden yükleme gerekiyor mu?
         if self.state.needs_reload {
-            self.sync_watchers(); // inotify — açık sekmelerdeki dizinleri ve aktif gezinme yolunu izle
-            self.load_current_directory();
+            if !self.state.dir.is_loading {
+                self.sync_watchers(); // inotify — açık sekmelerdeki dizinleri ve aktif gezinme yolunu izle
+                self.load_current_directory();
+            }
         }
 
         // Periyodik cihaz/sidebar taraması (3 saniyede bir ADB & diskler)
@@ -1079,6 +1093,7 @@ impl eframe::App for ArchExplorer {
 
         // 8. Akıllı yenileme (Smart repaint) — animasyon/işlem varken akıcı (~30 FPS), boştayken GPU/CPU tasarrufu
         let is_active = self.state.dir.is_loading
+            || self.state.needs_reload
             || self.state.terminal.is_running
             || self.state.preview_loading.is_some()
             || !self.state.notify.items.is_empty()
@@ -1229,6 +1244,19 @@ impl ArchExplorer {
             if i.key_pressed(Key::A) && i.modifiers.ctrl && !term_typing {
                 let entries = self.state.dir.entries.clone();
                 self.state.selection.select_all(&entries);
+            }
+
+            // View modes: Ctrl+1 (Grid), Ctrl+2 (List), Ctrl+3 (Compact)
+            if !term_typing && !self.state.search.active && self.state.rename_target.is_none() {
+                if i.key_pressed(Key::Num1) && i.modifiers.ctrl {
+                    self.state.set_view_mode_for_current_dir(crate::state::ViewMode::Grid);
+                }
+                if i.key_pressed(Key::Num2) && i.modifiers.ctrl {
+                    self.state.set_view_mode_for_current_dir(crate::state::ViewMode::List);
+                }
+                if i.key_pressed(Key::Num3) && i.modifiers.ctrl {
+                    self.state.set_view_mode_for_current_dir(crate::state::ViewMode::Compact);
+                }
             }
 
             // Arrow keys for file selection and Shift+Arrow for range selection

@@ -66,7 +66,7 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "mount"        => "\u{f0a0}",
             "list"         => "\u{f03a}",
             "grid"         => "\u{f00a}",
-            "compact"      => "\u{f0db}",
+            "compact"      => "\u{f00b}",
             "more" | "dots" => "\u{f142}",
             "visible"      => "\u{f06e}",
             "hidden"       => "\u{f070}",

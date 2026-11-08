@@ -1005,6 +1005,7 @@ mod tests {
 
     #[test]
     fn test_undo_returns_restored_paths() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let test_dir = format!("/tmp/ae_test_undo_paths_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);

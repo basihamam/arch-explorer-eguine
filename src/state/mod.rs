@@ -1650,6 +1650,7 @@ impl AppState {
         if self.panels.active == ActivePanel::DevicesView {
             self.panels.close();
         }
+        self.dir.is_loading = false;
         self.needs_reload = true;
         self.sync_terminal_cwd();
     }

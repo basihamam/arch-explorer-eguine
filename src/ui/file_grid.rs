@@ -442,6 +442,58 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
         });
 }
 
+fn get_grid_thumb_rect(
+    ctx: &egui::Context,
+    entry: &FileEntry,
+    thumb_center: Pos2,
+    max_thumb_w: f32,
+    max_thumb_h: f32,
+    thumb_q: crate::backend::thumbnails::ThumbQuality,
+) -> Rect {
+    let ext = entry.extension.to_lowercase();
+    let is_media = !entry.is_dir && matches!(ext.as_str(),
+        "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg"
+        |"mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts"
+        |"mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma");
+
+    if !is_media {
+        return Rect::from_center_size(thumb_center, Vec2::new(max_thumb_w, max_thumb_h));
+    }
+
+    if ext == "gif" {
+        let gif_id = egui::Id::new(format!("gif_cache_{}", entry.path));
+        let frames: Option<Vec<egui::TextureHandle>> = ctx.data_mut(|d| d.get_temp(gif_id));
+        if let Some(ref flist) = frames {
+            if let Some(h) = flist.first() {
+                let tex_size = h.size_vec2();
+                let aspect = if tex_size.y > 0.0 { (tex_size.x / tex_size.y).clamp(0.2, 5.0) } else { 1.0 };
+                let (tw, th) = if aspect >= (max_thumb_w / max_thumb_h) {
+                    (max_thumb_w, (max_thumb_w / aspect).round())
+                } else {
+                    (((max_thumb_h * aspect).round()).min(max_thumb_w), max_thumb_h)
+                };
+                return Rect::from_center_size(thumb_center, Vec2::new(tw, th));
+            }
+        }
+    } else {
+        let cache_key = format!("thumb_{}_{}", entry.path, thumb_q.suffix());
+        let thumb_id = egui::Id::new(&cache_key);
+        let handle: Option<egui::TextureHandle> = ctx.data_mut(|d| d.get_temp(thumb_id));
+        if let Some(ref h) = handle {
+            let tex_size = h.size_vec2();
+            let aspect = if tex_size.y > 0.0 { (tex_size.x / tex_size.y).clamp(0.2, 5.0) } else { 1.0 };
+            let (tw, th) = if aspect >= (max_thumb_w / max_thumb_h) {
+                (max_thumb_w, (max_thumb_w / aspect).round())
+            } else {
+                (((max_thumb_h * aspect).round()).min(max_thumb_w), max_thumb_h)
+            };
+            return Rect::from_center_size(thumb_center, Vec2::new(tw, th));
+        }
+    }
+
+    Rect::from_center_size(thumb_center, Vec2::new(max_thumb_w, max_thumb_h))
+}
+
 fn masonry_grid_item(
     ui: &mut Ui,
     t: &AexTheme,
@@ -497,13 +549,55 @@ fn masonry_grid_item(
     let item_rect_id = Id::new(format!("item_rect_{}", entry.path));
     ui.ctx().data_mut(|d| d.insert_temp(item_rect_id, rect));
 
+    let thumb_rect = Rect::from_min_size(
+        rect.min + Vec2::new(3.0, 3.0),
+        Vec2::new(item_w - 6.0, thumb_h),
+    );
+
+    let max_text_w = (item_w - 8.0).max(10.0);
+    let font_id = FontId::new(name_font, FontFamily::Proportional);
+    let text_w = name_lines.iter().map(|line| {
+        let galley = ui.painter().layout_no_wrap(line.clone(), font_id.clone(), Color32::WHITE);
+        galley.size().x
+    }).fold(0.0_f32, f32::max);
+    let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
+    let label_top_y = rect.min.y + thumb_h + 6.0;
+    let label_bottom_y = if has_badge {
+        rect.max.y - 4.0
+    } else {
+        label_top_y + label_h
+    };
+    let label_pill_rect = Rect::from_center_size(
+        Pos2::new(rect.center().x, (label_top_y + label_bottom_y) / 2.0),
+        Vec2::new(name_text_w, (label_bottom_y - label_top_y).max(16.0)),
+    );
+
+    // Nemo connected hitbox layout:
+    // 1) Thumbnail hitbox: bounds of thumbnail box with 2px margin on left, top, right;
+    //    extending its bottom margin all the way down to connect seamlessly with the label hitbox!
+    // 2) Label hitbox: text/pill bounds with ~2px margin, extending its top up to meet thumbnail.
+    // 3) Together, covers the entire active interactive area of the card with zero dead zones.
+    let thumb_margin = 2.0_f32;
+    let label_margin = 2.0_f32;
+    let thumb_hit = Rect::from_min_max(
+        Pos2::new(thumb_rect.min.x - thumb_margin, thumb_rect.min.y - thumb_margin),
+        Pos2::new(thumb_rect.max.x + thumb_margin, (label_top_y + 1.0).max(thumb_rect.max.y + thumb_margin)),
+    );
+    let label_hit = Rect::from_min_max(
+        Pos2::new(label_pill_rect.min.x - label_margin, thumb_rect.max.y.min(label_top_y - label_margin)),
+        Pos2::new(label_pill_rect.max.x + label_margin, label_bottom_y + label_margin),
+    );
+
     let hit_area = GridHitArea {
-        thumb_hit: rect,
-        label_hit: rect,
+        thumb_hit,
+        label_hit,
     };
 
+    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
+    let is_hovered_on_item = resp.hovered() && pointer_pos.map_or(false, |p| hit_area.contains(p));
+
     let hover_anim_id = Id::new(format!("masonry_hover_{}", entry.path));
-    let hover_factor = ui.ctx().animate_bool(hover_anim_id, resp.hovered());
+    let hover_factor = ui.ctx().animate_bool(hover_anim_id, is_hovered_on_item);
     let sel_anim_id = Id::new(format!("masonry_sel_{}", entry.path));
     let sel_factor = ui.ctx().animate_bool(sel_anim_id, is_sel);
 
@@ -528,12 +622,12 @@ fn masonry_grid_item(
                 c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), hover_alpha
             );
             painter.rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
+            let hover_stroke_alpha = (45.0 * hover_factor) as u8;
+            let hover_stroke_col = Color32::from_rgba_unmultiplied(
+                c.text_hint().r(), c.text_hint().g(), c.text_hint().b(), hover_stroke_alpha
+            );
+            painter.rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.0_f32, hover_stroke_col));
         }
-
-        let thumb_rect = Rect::from_min_size(
-            rect.min + Vec2::new(3.0, 3.0),
-            Vec2::new(item_w - 6.0, thumb_h),
-        );
 
         let drew_thumb = if is_media {
             let cache_key = format!("thumb_{}_{}", entry.path, thumb_q.suffix());
@@ -569,7 +663,6 @@ fn masonry_grid_item(
             );
         }
 
-        let max_text_w = (item_w - 8.0).max(10.0);
         let name_center_y = rect.min.y + thumb_h + 6.0 + label_h / 2.0;
         let text_color = if is_sel {
             c.accent()
@@ -577,7 +670,6 @@ fn masonry_grid_item(
             Color32::from_rgba_unmultiplied(c.text_primary().r(), c.text_primary().g(), c.text_primary().b(), (255.0 * opacity) as u8)
         };
 
-        let font_id = FontId::new(name_font, FontFamily::Proportional);
         let start_y = name_center_y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
         for (li, line) in name_lines.iter().enumerate() {
             let ly = start_y + li as f32 * line_spacing;
@@ -616,31 +708,90 @@ fn masonry_grid_item(
         }
     }
 
+    if !state.drag.dragging && !is_renaming && resp.hovered() && is_hovered_on_item {
+        attach_delayed_hover_tooltip(&resp, ui, t, entry, is_sel);
+    }
+
+    let interact_pos = resp.interact_pointer_pos()
+        .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.press_origin()).or(i.pointer.latest_pos())));
+    let clicked_on_item = interact_pos.map_or(false, |p| hit_area.contains(p));
+
     if resp.clicked() {
-        let is_ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
-        let is_shift = ui.input(|i| i.modifiers.shift);
-        if is_ctrl {
-            state.selection.toggle(entry.path.clone());
-        } else if is_shift {
-            let anchor = state.selection.last_clicked.clone().unwrap_or_else(|| entry.path.clone());
-            state.selection.select_range(visible_entries, &anchor, &entry.path, is_ctrl);
+        if clicked_on_item {
+            let is_ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+            let is_shift = ui.input(|i| i.modifiers.shift);
+            if is_ctrl {
+                state.selection.toggle(entry.path.clone());
+            } else if is_shift {
+                let anchor = state.selection.last_clicked.clone().unwrap_or_else(|| entry.path.clone());
+                state.selection.select_range(visible_entries, &anchor, &entry.path, is_ctrl);
+            } else {
+                state.selection.select_only(entry.path.clone());
+            }
         } else {
-            state.selection.select_only(entry.path.clone());
+            let modifiers = ui.input(|i| i.modifiers);
+            if !modifiers.ctrl && !modifiers.command && !modifiers.shift {
+                state.selection.clear();
+            }
         }
     }
-    if resp.double_clicked() && !is_renaming {
+    if resp.double_clicked() && !is_renaming && clicked_on_item {
         open_entry(state, entry);
     }
     if resp.secondary_clicked() {
-        let pos = ui.ctx().pointer_interact_pos().unwrap_or_else(|| rect.center());
+        let pos = interact_pos.unwrap_or_else(|| rect.center());
+        if clicked_on_item {
+            if !state.selection.is_selected(&entry.path) {
+                state.selection.select_only(entry.path.clone());
+            }
+            state.panels.context_menu = Some(ContextMenuState {
+                x: pos.x,
+                y: pos.y,
+                target: Some(entry.clone()),
+            });
+        } else {
+            state.panels.context_menu = Some(ContextMenuState {
+                x: pos.x,
+                y: pos.y,
+                target: None,
+            });
+        }
+    }
+
+    let press_origin = ui.ctx().input(|i| i.pointer.press_origin());
+    let drag_originated_on_item = press_origin.map_or(false, |p| hit_area.contains(p));
+
+    if resp.drag_started() && drag_originated_on_item {
         if !state.selection.is_selected(&entry.path) {
             state.selection.select_only(entry.path.clone());
         }
-        state.panels.context_menu = Some(ContextMenuState {
-            x: pos.x,
-            y: pos.y,
-            target: Some(entry.clone()),
-        });
+        let sources = state.selection.paths();
+        let copy = ui.input(|i| i.modifiers.ctrl);
+        spawn_native_drag(&sources);
+        state.drag.start(sources, copy);
+    }
+
+    // Drop target handling for folders
+    let is_pointer_over = ui.ctx().pointer_interact_pos()
+        .or_else(|| ui.ctx().pointer_hover_pos())
+        .map(|p| hit_area.contains(p) || rect.contains(p))
+        .unwrap_or(false);
+
+    if state.drag.dragging && entry.is_dir && is_pointer_over {
+        state.drag.target_dir = Some(entry.path.clone());
+        ui.painter().rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(2.5_f32, c.accent()));
+        ui.painter().rect_filled(rect, Rounding::same(s.radius_md),
+            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 55));
+
+        if ui.input(|i| i.pointer.any_released()) {
+            let dest = entry.path.clone();
+            let sources = state.drag.sources.clone();
+            let copy = state.drag.copy_mode;
+            state.drag.cancel();
+            if !sources.contains(&dest) {
+                state.start_transfer(sources, dest, copy);
+            }
+        }
     }
 
     hit_area
@@ -672,6 +823,7 @@ fn grid_item(
     let max_thumb_h = (icon_area_h - 6.0).max(24.0);
     let visual_center = rect.min + Vec2::new(item_w / 2.0, 3.0 + max_thumb_h / 2.0);
     let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::new(max_thumb_w, max_thumb_h));
+    let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, max_thumb_w, max_thumb_h, thumb_q);
 
     let max_text_w = (item_w - 8.0).max(20.0);
     let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
@@ -693,22 +845,49 @@ fn grid_item(
         Vec2::new(name_text_w, name_pill_h),
     );
 
-    // Hitbox: İkon/thumbnail ve yazının tam olarak göründükleri alana oturan hitbox
+    let sub_line_step = sub_font * 1.25;
+    let y_size = (y_name + name_pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.max.y - sub_line_step - 2.0);
+    let y_type = (y_size + sub_line_step).min(rect.max.y - 4.0);
+    let label_bottom_y = if y_type < rect.max.y - 1.0 && y_type > y_size + sub_font * 0.8 {
+        y_type + sub_font * 0.7
+    } else if y_size < rect.max.y - 2.0 {
+        y_size + sub_font * 0.7
+    } else {
+        label_pill_rect.max.y
+    };
+
+    // Nemo connected hitbox layout:
+    // 1) Thumbnail hitbox: bounds of thumbnail/icon with 2px margin on left, top, right;
+    //    extending its bottom margin all the way down to connect seamlessly with the label hitbox!
+    // 2) Label hitbox: text/pill bounds with ~2px margin, extending its top up to meet thumbnail.
+    // 3) Together, covers the entire active interactive area of the card with zero dead zones.
+    let thumb_margin = 2.0_f32;
+    let label_margin = 2.0_f32;
+
+    let thumb_hit = Rect::from_min_max(
+        Pos2::new(visual_thumb.min.x - thumb_margin, visual_thumb.min.y - thumb_margin),
+        Pos2::new(visual_thumb.max.x + thumb_margin, (label_top_y + 1.0).max(visual_thumb.max.y + thumb_margin)),
+    );
+    let label_hit = Rect::from_min_max(
+        Pos2::new(label_pill_rect.min.x - label_margin, visual_thumb.max.y.min(label_top_y - label_margin)),
+        Pos2::new(label_pill_rect.max.x + label_margin, label_bottom_y + label_margin),
+    );
+
     let hit_area = GridHitArea {
-        thumb_hit: thumb_box_rect.expand(2.0),
-        label_hit: label_pill_rect.expand(2.0),
+        thumb_hit,
+        label_hit,
     };
 
     // Store item rect for rubber-band and click deselect
     let item_rect_id = Id::new(format!("item_rect_{}", entry.path));
     ui.ctx().data_mut(|d| d.insert_temp(item_rect_id, rect));
 
-    let pointer_hover = ui.ctx().input(|i| i.pointer.hover_pos());
-    let is_hovered_on_item = pointer_hover.map_or(false, |p| hit_area.contains(p));
+    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
+    let is_hovered_on_item = resp.hovered() && pointer_pos.map_or(false, |p| hit_area.contains(p));
 
     // ── Smooth UI Animations (Tauri / Modern Desktop Style) ──
     let hover_anim_id = Id::new(format!("hover_anim_{}", entry.path));
-    let hover_factor = ui.ctx().animate_bool(hover_anim_id, resp.hovered() && is_hovered_on_item);
+    let hover_factor = ui.ctx().animate_bool(hover_anim_id, is_hovered_on_item);
     let sel_anim_id = Id::new(format!("sel_anim_{}", entry.path));
     let sel_factor = ui.ctx().animate_bool(sel_anim_id, is_sel);
 
@@ -736,6 +915,11 @@ fn grid_item(
                 c.bg_surface2().r(), c.bg_surface2().g(), c.bg_surface2().b(), hover_alpha
             );
             painter.rect_filled(rect, Rounding::same(s.radius_md), hover_bg);
+            let hover_stroke_alpha = (45.0 * hover_factor) as u8;
+            let hover_stroke_col = Color32::from_rgba_unmultiplied(
+                c.text_hint().r(), c.text_hint().g(), c.text_hint().b(), hover_stroke_alpha
+            );
+            painter.rect_stroke(rect, Rounding::same(s.radius_md), Stroke::new(1.0_f32, hover_stroke_col));
         }
 
         // Geri alma / aktarım sonrası parıldama efekti (Glow pulse)
@@ -865,10 +1049,6 @@ fn grid_item(
 
         let type_str = entry_type_label(entry);
         let display_type = truncate_to_width(ui, type_str, &sub_font_id, max_text_w);
-
-        let sub_line_step = sub_font * 1.25;
-        let y_size = (y_name + name_pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.max.y - sub_line_step - 2.0);
-        let y_type = (y_size + sub_line_step).min(rect.max.y - 4.0);
 
         if y_size < rect.max.y - 2.0 {
             painter.text(
@@ -3307,6 +3487,53 @@ mod tests {
     }
 
     #[test]
+    fn test_nemo_connected_hitbox_no_dead_zones() {
+        // Thumbnail at (10, 10) to (90, 70)
+        let visual_thumb = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(90.0, 70.0));
+        // Label at (20, 85) to (80, 105)
+        let label_top_y = 85.0_f32;
+        let label_bottom_y = 105.0_f32;
+        let label_pill_rect = Rect::from_min_max(Pos2::new(20.0, label_top_y), Pos2::new(80.0, label_bottom_y));
+
+        let thumb_margin = 2.0_f32;
+        let label_margin = 2.0_f32;
+
+        let thumb_hit = Rect::from_min_max(
+            Pos2::new(visual_thumb.min.x - thumb_margin, visual_thumb.min.y - thumb_margin),
+            Pos2::new(visual_thumb.max.x + thumb_margin, (label_top_y + 1.0).max(visual_thumb.max.y + thumb_margin)),
+        );
+        let label_hit = Rect::from_min_max(
+            Pos2::new(label_pill_rect.min.x - label_margin, visual_thumb.max.y.min(label_top_y - label_margin)),
+            Pos2::new(label_pill_rect.max.x + label_margin, label_bottom_y + label_margin),
+        );
+
+        let hit_area = GridHitArea { thumb_hit, label_hit };
+
+        // 1. Inside thumbnail image (with 2px margin)
+        assert!(hit_area.contains(Pos2::new(50.0, 40.0)));
+        assert!(hit_area.contains(Pos2::new(8.5, 40.0))); // Left 2px margin
+        assert!(hit_area.contains(Pos2::new(50.0, 8.5))); // Top 2px margin
+
+        // 2. In the gap between thumbnail and label (y = 72.0, 78.0, 84.0) -> NO DEAD ZONE!
+        assert!(hit_area.contains(Pos2::new(50.0, 72.0)));
+        assert!(hit_area.contains(Pos2::new(50.0, 78.0)));
+        assert!(hit_area.contains(Pos2::new(50.0, 84.0)));
+
+        // 3. Inside label pill and text
+        assert!(hit_area.contains(Pos2::new(50.0, 95.0)));
+        assert!(hit_area.contains(Pos2::new(18.5, 95.0))); // Left 2px margin
+        assert!(hit_area.contains(Pos2::new(50.0, 106.5))); // Bottom 2px margin
+
+        // 4. Outside empty margins -> NOT a hit (allows deselecting & rubber-band)
+        assert!(!hit_area.contains(Pos2::new(5.0, 40.0))); // Far left of thumbnail
+        assert!(!hit_area.contains(Pos2::new(95.0, 40.0))); // Far right of thumbnail
+        assert!(!hit_area.contains(Pos2::new(50.0, 5.0))); // Above thumbnail
+        assert!(!hit_area.contains(Pos2::new(50.0, 110.0))); // Below label
+        assert!(!hit_area.contains(Pos2::new(5.0, 78.0))); // Far left of gap
+        assert!(!hit_area.contains(Pos2::new(95.0, 78.0))); // Far right of gap
+    }
+
+    #[test]
     fn test_wrap_name_two_lines() {
         // Fits on single line
         let (l1, l2) = wrap_name_two_lines("file.txt", 12);
@@ -3465,6 +3692,7 @@ mod tests {
     #[test]
     fn test_media_grid_style_toggle() {
         let mut state = AppState::new();
+        state.set_media_grid_style(MediaGridStyle::NemoGrid);
         assert_eq!(state.media_grid_style, MediaGridStyle::NemoGrid);
         state.set_media_grid_style(MediaGridStyle::Masonry);
         assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);

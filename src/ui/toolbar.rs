@@ -60,23 +60,34 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
 
             // ── Responsive Breakpoints ────────────────────────────────────
             let total_avail_w = ui.available_width();
-            let show_view_modes = total_avail_w >= 620.0;
+            let show_view_modes = total_avail_w >= 640.0;
             let show_dual_pane = total_avail_w >= 540.0;
             let show_hidden_toggle = total_avail_w >= 460.0;
             let show_preview = total_avail_w >= 390.0;
-            let show_search_btn = total_avail_w >= 330.0 || state.search.active;
+            let show_search_btn = total_avail_w >= 320.0 || state.search.active;
 
-            let mut right_reserve = 10.0;
-            if show_view_modes { right_reserve += 64.0; }
-            if show_hidden_toggle { right_reserve += 32.0; }
-            if show_dual_pane { right_reserve += 32.0; }
-            if show_preview { right_reserve += 32.0; }
-            if show_search_btn && !state.search.active { right_reserve += 36.0; }
+            // Accurate calculation of right cluster width
+            let mut right_cluster_w = 32.0; // Folder Options button (28px + 4px spacing)
+            if show_view_modes {
+                right_cluster_w += 96.0 + 4.0; // Grid, List, Compact (3 * 32px) + spacer
+            }
+            if show_hidden_toggle { right_cluster_w += 32.0; }
+            if show_dual_pane { right_cluster_w += 32.0; }
+            if show_preview { right_cluster_w += 32.0; }
+            right_cluster_w += 12.0; // Safety & padding margin
 
-            let addr_width = if state.search.active {
-                (total_avail_w * 0.45).clamp(80.0, 350.0)
+            // Address bar & search width allocation — prevents overlap with right cluster
+            let (addr_width, search_bar_w) = if state.search.active {
+                let avail_for_nav = (total_avail_w - right_cluster_w - sp.sm).max(180.0);
+                let search_w = (avail_for_nav * 0.45).clamp(130.0, 240.0);
+                let addr_w = (avail_for_nav - search_w - sp.sm).max(60.0);
+                (addr_w, Some(search_w))
+            } else if show_search_btn {
+                let addr_w = (total_avail_w - right_cluster_w - 36.0).max(80.0);
+                (addr_w, None)
             } else {
-                (total_avail_w - right_reserve).max(80.0)
+                let addr_w = (total_avail_w - right_cluster_w).max(80.0);
+                (addr_w, None)
             };
 
             let just_entered_id = ui.id().with("addr_just_entered");
@@ -139,8 +150,8 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             ui.add_space(sp.sm);
 
             // ── Search ────────────────────────────────────────────────────
-            if state.search.active {
-                search_bar(ui, t, state);
+            if let Some(sw) = search_bar_w {
+                search_bar(ui, t, state, sw);
             } else if show_search_btn {
                 if nav_btn(ui, t, icon(t, "search"), true, || {}).on_hover_text("Search (Ctrl+F)").clicked() {
                     state.search.active = true;
@@ -185,153 +196,210 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                     }
                 }
 
+                // ── Separator / space before view modes ──────────────────
+                if show_view_modes && (show_hidden_toggle || show_dual_pane || show_preview) {
+                    ui.add_space(sp.xs);
+                }
+
+                // ── View Mode Toggles (Compact, List, Grid) ───────────────
+                // Added right-to-left: Compact (right), List (mid), Grid (left)
                 if show_view_modes {
-                    ui.add_space(sp.sm);
+                    let compact_color = if state.view_mode == ViewMode::Compact { c.accent() } else { c.text_hint() };
+                    let list_color = if state.view_mode == ViewMode::List { c.accent() } else { c.text_hint() };
+                    let grid_color = if state.view_mode == ViewMode::Grid { c.accent() } else { c.text_hint() };
 
-                    // ── View Mode Toggle & Options ───────────────────────────
-                    let grid_color = if state.view_mode == ViewMode::Grid {
-                        c.accent()
-                    } else {
-                        c.text_hint()
-                    };
-                    let list_color = if state.view_mode == ViewMode::List {
-                        c.accent()
-                    } else {
-                        c.text_hint()
-                    };
-                    let compact_color = if state.view_mode == ViewMode::Compact {
-                        c.accent()
-                    } else {
-                        c.text_hint()
-                    };
-
-                    if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
-                        state.set_view_mode_for_current_dir(ViewMode::Grid);
+                    if icon_btn(ui, t, icon(t, "compact"), compact_color).on_hover_text("Compact View (Ctrl+3)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::Compact);
                     }
                     if icon_btn(ui, t, icon(t, "list"), list_color).on_hover_text("List View (Ctrl+2)").clicked() {
                         state.set_view_mode_for_current_dir(ViewMode::List);
                     }
-                    if icon_btn(ui, t, icon(t, "compact"), compact_color).on_hover_text("Compact View (Ctrl+3)").clicked() {
-                        state.set_view_mode_for_current_dir(ViewMode::Compact);
+                    if icon_btn(ui, t, icon(t, "grid"), grid_color).on_hover_text("Grid View (Ctrl+1)").clicked() {
+                        state.set_view_mode_for_current_dir(ViewMode::Grid);
                     }
 
-                    let view_opts_id = Id::new("toolbar_view_options_popup_open");
-                    let mut popup_open: bool = ui.ctx().data_mut(|d| d.get_temp(view_opts_id).unwrap_or(false));
-                    let opts_color = if popup_open { c.accent() } else { c.text_hint() };
-                    let opts_btn = icon_btn(ui, t, "⋮", opts_color).on_hover_text("View Options");
-                    if opts_btn.clicked() {
-                        popup_open = !popup_open;
-                        ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, popup_open));
-                    }
+                    ui.add_space(sp.xs);
+                }
 
-                    if popup_open {
-                        let popup_w = 210.0;
-                        let popup_pos = Pos2::new(
-                            (opts_btn.rect.right() - popup_w).max(4.0),
-                            opts_btn.rect.bottom() + 4.0,
-                        );
+                // ── Folder Options / Settings icon (FAR LEFT of right cluster!) ──
+                let view_opts_id = Id::new("toolbar_view_options_popup_open");
+                let mut popup_open: bool = ui.ctx().data_mut(|d| d.get_temp(view_opts_id).unwrap_or(false));
+                let opts_color = if popup_open { c.accent() } else { c.text_hint() };
+                let opts_btn = icon_btn(ui, t, icon(t, "settings"), opts_color)
+                    .on_hover_text("Folder Options & View Settings");
+                if opts_btn.clicked() {
+                    popup_open = !popup_open;
+                    ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, popup_open));
+                }
 
-                        let menu_fill = if t.effects.glass_panels {
-                            Color32::from_rgba_unmultiplied(
-                                c.bg_mantle().r(),
-                                c.bg_mantle().g(),
-                                c.bg_mantle().b(),
-                                (t.effects.panel_opacity * 255.0) as u8,
-                            )
-                        } else {
-                            c.bg_mantle()
-                        };
+                if popup_open {
+                    let popup_w = 230.0;
+                    let screen_r = ui.ctx().screen_rect().right();
+                    let popup_x = opts_btn.rect.left().clamp(4.0, (screen_r - popup_w - 4.0).max(4.0));
+                    let popup_pos = Pos2::new(popup_x, opts_btn.rect.bottom() + 4.0);
 
-                        let mut close_popup = false;
-                        let mut new_style: Option<MediaGridStyle> = None;
+                    let menu_fill = if t.effects.glass_panels {
+                        Color32::from_rgba_unmultiplied(
+                            c.bg_mantle().r(),
+                            c.bg_mantle().g(),
+                            c.bg_mantle().b(),
+                            (t.effects.panel_opacity * 255.0) as u8,
+                        )
+                    } else {
+                        c.bg_mantle()
+                    };
 
-                        egui::Area::new(Id::new("toolbar_view_options_popup_area"))
-                            .fixed_pos(popup_pos)
-                            .order(Order::Tooltip)
-                            .show(ui.ctx(), |ui| {
-                                egui::Frame {
-                                    fill: menu_fill,
-                                    rounding: Rounding::same(s.radius_md),
-                                    stroke: Stroke::new(1.0_f32, c.border()),
-                                    shadow: epaint::Shadow {
-                                        offset: Vec2::new(0.0, 4.0),
-                                        blur: 12.0,
-                                        spread: 0.0,
-                                        color: Color32::from_rgba_unmultiplied(0, 0, 0, 90),
-                                    },
-                                    inner_margin: Margin::same(sp.xs + 2.0),
-                                    ..Default::default()
-                                }
-                                .show(ui, |ui| {
-                                    ui.set_width(popup_w - (sp.xs + 2.0) * 2.0);
+                    let mut close_popup = false;
+                    let mut new_style: Option<MediaGridStyle> = None;
 
+                    egui::Area::new(Id::new("toolbar_view_options_popup_area"))
+                        .fixed_pos(popup_pos)
+                        .order(Order::Tooltip)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame {
+                                fill: menu_fill,
+                                rounding: Rounding::same(s.radius_md),
+                                stroke: Stroke::new(1.0_f32, c.border()),
+                                shadow: epaint::Shadow {
+                                    offset: Vec2::new(0.0, 4.0),
+                                    blur: 12.0,
+                                    spread: 0.0,
+                                    color: Color32::from_rgba_unmultiplied(0, 0, 0, 90),
+                                },
+                                inner_margin: Margin::same(sp.xs + 3.0),
+                                ..Default::default()
+                            }
+                            .show(ui, |ui| {
+                                ui.set_width(popup_w - (sp.xs + 3.0) * 2.0);
+
+                                let has_hidden = !show_view_modes
+                                    || !show_hidden_toggle
+                                    || !show_dual_pane
+                                    || !show_preview
+                                    || (!show_search_btn && !state.search.active);
+
+                                if has_hidden {
                                     ui.add_space(2.0);
                                     ui.label(
-                                        RichText::new("GRID VIEW STYLE")
-                                            .size(9.5)
+                                        RichText::new("GÖRÜNÜM & ARAÇLAR / TOOLBAR")
+                                            .size(9.0)
                                             .color(c.text_hint())
                                             .strong(),
                                     );
-                                    ui.add_space(4.0);
+                                    ui.add_space(3.0);
 
-                                    // Option 1: Nemo Uniform Grid
-                                    let is_nemo = state.media_grid_style == MediaGridStyle::NemoGrid;
-                                    let (r1, resp1) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
-                                    if resp1.hovered() {
-                                        ui.painter().rect_filled(r1, Rounding::same(s.radius_sm), c.bg_surface0());
-                                    }
-                                    let check_str1 = if is_nemo { "✓ " } else { "   " };
-                                    let col1 = if is_nemo { c.accent() } else { c.text_primary() };
-                                    ui.painter().text(
-                                        r1.left_center() + Vec2::new(6.0, 0.0),
-                                        Align2::LEFT_CENTER,
-                                        format!("{}Nemo Uniform Grid", check_str1),
-                                        FontId::new(t.typography.size_sm, FontFamily::Proportional),
-                                        col1,
-                                    );
-                                    if resp1.clicked() {
-                                        new_style = Some(MediaGridStyle::NemoGrid);
-                                        close_popup = true;
-                                    }
-
-                                    // Option 2: Masonry (Mansion) Flow
-                                    let is_masonry = state.media_grid_style == MediaGridStyle::Masonry;
-                                    let (r2, resp2) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
-                                    if resp2.hovered() {
-                                        ui.painter().rect_filled(r2, Rounding::same(s.radius_sm), c.bg_surface0());
-                                    }
-                                    let check_str2 = if is_masonry { "✓ " } else { "   " };
-                                    let col2 = if is_masonry { c.accent() } else { c.text_primary() };
-                                    ui.painter().text(
-                                        r2.left_center() + Vec2::new(6.0, 0.0),
-                                        Align2::LEFT_CENTER,
-                                        format!("{}Masonry (Mansion) Flow", check_str2),
-                                        FontId::new(t.typography.size_sm, FontFamily::Proportional),
-                                        col2,
-                                    );
-                                    if resp2.clicked() {
-                                        new_style = Some(MediaGridStyle::Masonry);
-                                        close_popup = true;
-                                    }
-
-                                    // Check click outside
-                                    let popup_rect = ui.min_rect();
-                                    if ui.input(|i| i.pointer.any_pressed()) {
-                                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                            if !popup_rect.contains(pos) && !opts_btn.rect.contains(pos) {
-                                                close_popup = true;
-                                            }
+                                    // Hidden Search
+                                    if !show_search_btn && !state.search.active {
+                                        if menu_action_item(ui, t, icon(t, "search"), "Search (Ctrl+F)", false, false).clicked() {
+                                            state.search.active = true;
+                                            close_popup = true;
                                         }
                                     }
-                                });
-                            });
 
-                        if let Some(style) = new_style {
-                            state.set_media_grid_style(style);
-                        }
-                        if close_popup {
-                            ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, false));
-                        }
+                                    // Hidden View Modes
+                                    if !show_view_modes {
+                                        if menu_action_item(ui, t, icon(t, "grid"), "Grid View (Ctrl+1)", state.view_mode == ViewMode::Grid, true).clicked() {
+                                            state.set_view_mode_for_current_dir(ViewMode::Grid);
+                                            close_popup = true;
+                                        }
+                                        if menu_action_item(ui, t, icon(t, "list"), "List View (Ctrl+2)", state.view_mode == ViewMode::List, true).clicked() {
+                                            state.set_view_mode_for_current_dir(ViewMode::List);
+                                            close_popup = true;
+                                        }
+                                        if menu_action_item(ui, t, icon(t, "compact"), "Compact View (Ctrl+3)", state.view_mode == ViewMode::Compact, true).clicked() {
+                                            state.set_view_mode_for_current_dir(ViewMode::Compact);
+                                            close_popup = true;
+                                        }
+                                    }
+
+                                    // Hidden toggle
+                                    if !show_hidden_toggle {
+                                        let is_hid = state.dir.show_hidden;
+                                        let hid_lbl = if is_hid { "Hide Hidden Files (Ctrl+H)" } else { "Show Hidden Files (Ctrl+H)" };
+                                        let hid_ico = icon(t, if is_hid { "visible" } else { "hidden" });
+                                        if menu_action_item(ui, t, hid_ico, hid_lbl, is_hid, true).clicked() {
+                                            state.dir.show_hidden = !state.dir.show_hidden;
+                                            state.refresh();
+                                            close_popup = true;
+                                        }
+                                    }
+
+                                    // Dual Pane
+                                    if !show_dual_pane {
+                                        if menu_action_item(ui, t, "\u{f0db}", "Dual Pane (Ctrl+P)", state.dual_pane, true).clicked() {
+                                            if state.dual_pane { state.close_dual_pane(); }
+                                            else               { state.open_dual_pane(); }
+                                            close_popup = true;
+                                        }
+                                    }
+
+                                    // Preview Panel
+                                    if !show_preview {
+                                        let is_prev = state.panels.active == crate::state::ActivePanel::Preview;
+                                        if menu_action_item(ui, t, icon(t, "preview"), "Preview Panel (F3)", is_prev, true).clicked() {
+                                            if is_prev {
+                                                state.media_player.stop();
+                                                state.panels.close();
+                                            } else {
+                                                state.panels.open_preview();
+                                            }
+                                            close_popup = true;
+                                        }
+                                    }
+
+                                    ui.add_space(4.0);
+                                    ui.painter().hline(
+                                        ui.cursor().left()..=ui.cursor().right(),
+                                        ui.cursor().top(),
+                                        Stroke::new(1.0_f32, c.border()),
+                                    );
+                                    ui.add_space(4.0);
+                                }
+
+                                // ── Daha Fazla / More Options ────────────────
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new("DAHA FAZLA / MORE OPTIONS")
+                                        .size(9.0)
+                                        .color(c.text_hint())
+                                        .strong(),
+                                );
+                                ui.add_space(3.0);
+
+                                // Option 1: Nemo Uniform Grid
+                                let is_nemo = state.media_grid_style == MediaGridStyle::NemoGrid;
+                                if menu_action_item(ui, t, icon(t, "grid"), "Nemo Uniform Grid", is_nemo, true).clicked() {
+                                    new_style = Some(MediaGridStyle::NemoGrid);
+                                    close_popup = true;
+                                }
+
+                                // Option 2: Masonry (Mansion) Flow
+                                let is_masonry = state.media_grid_style == MediaGridStyle::Masonry;
+                                if menu_action_item(ui, t, "\u{f009}", "Masonry (Mansion) Flow", is_masonry, true).clicked() {
+                                    new_style = Some(MediaGridStyle::Masonry);
+                                    close_popup = true;
+                                }
+
+                                // Check click outside or Escape
+                                let popup_rect = ui.min_rect();
+                                if ui.input(|i| i.pointer.any_pressed()) {
+                                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                        if !popup_rect.contains(pos) && !opts_btn.rect.contains(pos) {
+                                            close_popup = true;
+                                        }
+                                    }
+                                }
+                                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                    close_popup = true;
+                                }
+                            });
+                        });
+
+                    if let Some(style) = new_style {
+                        state.set_media_grid_style(style);
+                    }
+                    if close_popup {
+                        ui.ctx().data_mut(|d| d.insert_temp(view_opts_id, false));
                     }
                 }
             });
@@ -665,7 +733,61 @@ fn icon_btn(ui: &mut Ui, t: &AexTheme, label: &str, color: Color32) -> Response 
     resp
 }
 
-fn search_bar(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
+fn menu_action_item(
+    ui: &mut Ui,
+    t: &AexTheme,
+    icon_str: &str,
+    text: &str,
+    checked: bool,
+    show_check: bool,
+) -> Response {
+    let c = &t.colors;
+    let s = &t.shape;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, Rounding::same(s.radius_sm), c.bg_surface0());
+    }
+    let text_color = if checked { c.accent() } else { c.text_primary() };
+    let icon_color = if checked { c.accent() } else { c.text_secondary() };
+
+    let mut x = rect.left() + 6.0;
+    let y = rect.center().y;
+
+    if show_check {
+        let check_str = if checked { "✓" } else { " " };
+        ui.painter().text(
+            Pos2::new(x, y),
+            Align2::LEFT_CENTER,
+            check_str,
+            FontId::new(t.typography.size_sm, FontFamily::Monospace),
+            c.accent(),
+        );
+        x += 16.0;
+    }
+
+    if !icon_str.is_empty() {
+        ui.painter().text(
+            Pos2::new(x, y),
+            Align2::LEFT_CENTER,
+            icon_str,
+            FontId::new(t.icons.size_sm, FontFamily::Monospace),
+            icon_color,
+        );
+        x += 20.0;
+    }
+
+    ui.painter().text(
+        Pos2::new(x, y),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::new(t.typography.size_sm, FontFamily::Proportional),
+        text_color,
+    );
+
+    resp
+}
+
+fn search_bar(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) {
     let c = &t.colors;
 
     let buf_id = ui.id().with("search_buf");
@@ -673,10 +795,11 @@ fn search_bar(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
         d.get_temp(buf_id).unwrap_or_else(|| state.search.query.clone())
     );
 
+    let edit_w = (width - 28.0).max(60.0);
     let resp = ui.add(
         egui::TextEdit::singleline(&mut buf)
             .hint_text(format!("{} Search…", super::icon(t, "search")))
-            .desired_width(220.0)
+            .desired_width(edit_w)
             .font(FontId::new(t.typography.size_sm, FontFamily::Proportional))
             .text_color(c.text_primary())
     );
@@ -696,5 +819,86 @@ fn search_bar(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
         ui.ctx().data_mut(|d| {
             d.remove::<String>(buf_id);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::defaults::default_theme;
+
+    #[test]
+    fn test_compact_icon_distinct_from_dual_pane() {
+        let theme = default_theme();
+        let compact_icon = super::super::icon(&theme, "compact");
+        let grid_icon = super::super::icon(&theme, "grid");
+        let list_icon = super::super::icon(&theme, "list");
+        let settings_icon = super::super::icon(&theme, "settings");
+
+        assert_eq!(compact_icon, "\u{f00b}", "Compact view should use th-list Nerd Font glyph");
+        assert_ne!(compact_icon, "\u{f0db}", "Compact view must NOT share icon with dual pane (fa-columns)");
+        assert_eq!(grid_icon, "\u{f00a}");
+        assert_eq!(list_icon, "\u{f03a}");
+        assert_eq!(settings_icon, "\u{f013}");
+    }
+
+    #[test]
+    fn test_toolbar_reserve_width_prevents_overlap() {
+        // Test responsive calculations
+        let total_avail_w = 700.0_f32;
+        let show_view_modes = total_avail_w >= 640.0;
+        let show_dual_pane = total_avail_w >= 540.0;
+        let show_hidden_toggle = total_avail_w >= 460.0;
+        let show_preview = total_avail_w >= 390.0;
+        let show_search_btn = total_avail_w >= 320.0;
+
+        assert!(show_view_modes);
+        assert!(show_dual_pane);
+        assert!(show_hidden_toggle);
+        assert!(show_preview);
+        assert!(show_search_btn);
+
+        let mut right_cluster_w = 32.0;
+        if show_view_modes { right_cluster_w += 100.0; }
+        if show_hidden_toggle { right_cluster_w += 32.0; }
+        if show_dual_pane { right_cluster_w += 32.0; }
+        if show_preview { right_cluster_w += 32.0; }
+        right_cluster_w += 12.0;
+
+        // With search button:
+        let addr_w = (total_avail_w - right_cluster_w - 36.0).max(80.0);
+        let used_left = addr_w + 36.0;
+        let remaining_for_right = total_avail_w - used_left;
+        assert!(remaining_for_right >= right_cluster_w,
+            "Remaining width ({}) must accommodate right cluster ({})", remaining_for_right, right_cluster_w);
+
+        // When search is active:
+        let avail_for_nav = (total_avail_w - right_cluster_w - 4.0).max(180.0);
+        let search_w = (avail_for_nav * 0.45).clamp(130.0, 240.0);
+        let search_addr_w = (avail_for_nav - search_w - 4.0).max(60.0);
+        let total_nav_used = search_addr_w + 4.0 + search_w;
+        assert!(total_avail_w - total_nav_used >= right_cluster_w,
+            "When search is active, right cluster space must be preserved without collision");
+    }
+
+    #[test]
+    fn test_view_modes_and_media_grid_style_state() {
+        let mut state = AppState::new();
+        state.nav.current_path = "/home/aiuser".to_string();
+
+        state.set_view_mode_for_current_dir(ViewMode::Grid);
+        assert_eq!(state.view_mode, ViewMode::Grid);
+
+        state.set_view_mode_for_current_dir(ViewMode::List);
+        assert_eq!(state.view_mode, ViewMode::List);
+
+        state.set_view_mode_for_current_dir(ViewMode::Compact);
+        assert_eq!(state.view_mode, ViewMode::Compact);
+
+        state.set_media_grid_style(MediaGridStyle::NemoGrid);
+        assert_eq!(state.media_grid_style, MediaGridStyle::NemoGrid);
+
+        state.set_media_grid_style(MediaGridStyle::Masonry);
+        assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
     }
 }
