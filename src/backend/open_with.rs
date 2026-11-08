@@ -196,12 +196,16 @@ pub fn open_with_app(path: String, desktop_id: String) -> Result<(), String> {
 }
 
 pub fn open_with_wine(path: &str) -> Result<(), String> {
+    use std::process::Stdio;
     let p = Path::new(path);
     let parent = p.parent().unwrap_or_else(|| Path::new("/"));
-    // 1. wine start /unix <path>
+    // 1. wine start /unix <path> (arka planda sessizce başlat — terminal açma!)
     let res = Command::new("wine")
         .args(["start", "/unix", path])
         .current_dir(parent)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn();
     if res.is_ok() {
         return Ok(());
@@ -210,6 +214,9 @@ pub fn open_with_wine(path: &str) -> Result<(), String> {
     Command::new("wine")
         .arg(path)
         .current_dir(parent)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("Wine çalıştırma hatası: {}", e))?;
     Ok(())

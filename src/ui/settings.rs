@@ -244,6 +244,7 @@ fn tab_appearance(ui: &mut Ui, t: &AexTheme, state: &mut AppState, engine: &mut 
             engine.switch_to(&theme_meta.id, &ctx);
             // Refresh cache after switch
             ctx.data_mut(|d| d.remove::<Vec<crate::theme::ThemeMeta>>(themes_cache_id));
+            ctx.request_repaint();
         });
         ui.add_space(sp.xs);
     }
@@ -363,14 +364,16 @@ fn theme_card(ui: &mut Ui, t: &AexTheme, meta: &ThemeMeta, is_active: bool, on_s
     let s  = &t.shape;
     let sp = &t.spacing;
 
-    egui::Frame {
+    let mut selected = false;
+
+    let resp = egui::Frame {
         fill: if is_active {
-            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 20)
+            Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 25)
         } else {
             c.bg_surface0()
         },
         rounding: Rounding::same(s.radius_md),
-        stroke: Stroke::new(1.0_f32, if is_active { c.accent() } else { c.border() }),
+        stroke: Stroke::new(if is_active { 1.5 } else { 1.0 }, if is_active { c.accent() } else { c.border() }),
         inner_margin: Margin::symmetric(sp.md, sp.sm),
         ..Default::default()
     }
@@ -401,12 +404,17 @@ fn theme_card(ui: &mut Ui, t: &AexTheme, meta: &ThemeMeta, is_active: bool, on_s
                             .stroke(Stroke::new(1.0_f32, c.border()))
                             .rounding(Rounding::same(s.radius_sm))
                     ).clicked() {
-                        on_select();
+                        selected = true;
                     }
                 }
             });
         });
     });
+
+    let card_click = ui.interact(resp.response.rect, resp.response.id, Sense::click());
+    if (card_click.clicked() || selected) && !is_active {
+        on_select();
+    }
 }
 
 // ── Layout Tab ────────────────────────────────────────────────────────────────

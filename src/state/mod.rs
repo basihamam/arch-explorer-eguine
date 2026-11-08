@@ -613,7 +613,7 @@ pub struct PanelState {
 impl PanelState {
     fn new() -> Self {
         Self {
-            active: ActivePanel::None,
+            active: ActivePanel::Preview,
             context_menu: None,
         }
     }
@@ -1659,6 +1659,8 @@ impl AppState {
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
             tab.view_mode   = Some(self.view_mode.clone());
+            tab.sort_by     = Some(self.dir.sort_by);
+            tab.sort_asc    = Some(self.dir.sort_asc);
             tab.update_label();
         }
 
@@ -1675,6 +1677,17 @@ impl AppState {
             self.selection.selected = tab.selection.clone();
             self.search.query     = tab.search_query.clone();
             self.search.active    = !tab.search_query.is_empty();
+
+            if let Some(sb) = tab.sort_by {
+                self.dir.sort_by = sb;
+            } else {
+                self.dir.sort_by = SortBy::Name;
+            }
+            if let Some(sa) = tab.sort_asc {
+                self.dir.sort_asc = sa;
+            } else {
+                self.dir.sort_asc = true;
+            }
 
             if let Some(ref vm) = tab.view_mode {
                 self.view_mode = vm.clone();
@@ -1714,6 +1727,8 @@ impl AppState {
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
             tab.view_mode   = Some(self.view_mode.clone());
+            tab.sort_by     = Some(self.dir.sort_by);
+            tab.sort_asc    = Some(self.dir.sort_asc);
             tab.update_label();
         }
 
@@ -1731,6 +1746,8 @@ impl AppState {
             self.selection.selected = tab.selection.clone();
             self.search.query     = tab.search_query.clone();
             self.search.active    = !tab.search_query.is_empty();
+            self.dir.sort_by      = SortBy::Name;
+            self.dir.sort_asc     = true;
 
             let path_clean = tab.path.trim_end_matches('/');
             let key = if path_clean.is_empty() { "/" } else { path_clean };
@@ -2102,25 +2119,18 @@ impl AppState {
             }
 
             if dst_path.exists() {
-                if src_path.is_dir() && dst_path.is_dir() && src != &dst {
-                    // İki aynı klasör varsa: İçindeki öğelere bak ve her biri için çakışmaları topla
-                    let mut dummy_undos = Vec::new();
-                    let mut dummy_count = 0;
-                    collect_dir_conflicts_recursive(src_path, dst_path, copy, &mut conflicts, &mut dummy_undos, &mut dummy_count);
-                } else {
-                    let (src_sz, src_mod, is_dir) = get_file_summary(src);
-                    let (dst_sz, dst_mod, _) = get_file_summary(&dst);
-                    conflicts.push(ConflictItem {
-                        src_path: src.clone(),
-                        dest_path: dst,
-                        is_copy: copy,
-                        is_dir,
-                        src_size: src_sz,
-                        dest_size: dst_sz,
-                        src_modified: src_mod,
-                        dest_modified: dst_mod,
-                    });
-                }
+                let (src_sz, src_mod, is_dir) = get_file_summary(src);
+                let (dst_sz, dst_mod, _) = get_file_summary(&dst);
+                conflicts.push(ConflictItem {
+                    src_path: src.clone(),
+                    dest_path: dst,
+                    is_copy: copy,
+                    is_dir,
+                    src_size: src_sz,
+                    dest_size: dst_sz,
+                    src_modified: src_mod,
+                    dest_modified: dst_mod,
+                });
             } else {
                 direct_sources.push(src.clone());
             }
@@ -2203,7 +2213,28 @@ impl AppState {
             self.notify.success(format!("{} öğe başarıyla aktarıldı ({})", total_completed, dest_dir));
         } else {
             let item = diag.queue[diag.current_idx].clone();
-            if let Ok(Some(action)) = execute_transfer_item(&item.src_path, &item.dest_path, item.is_copy, choice) {
+            let ext = std::path::Path::new(&item.src_path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            let is_archive = matches!(ext.as_str(), "zip"|"tar"|"gz"|"tgz"|"bz2"|"xz"|"zst"|"7z"|"rar");
+            if is_archive && choice != ConflictChoice::Skip {
+                let out_dir = if choice == ConflictChoice::KeepBoth {
+                    let parent = std::path::Path::new(&item.dest_path).parent().unwrap_or_else(|| std::path::Path::new("/"));
+                    let name = std::path::Path::new(&item.dest_path).file_name().and_then(|n| n.to_str()).unwrap_or("folder");
+                    crate::backend::clipboard::resolve_conflict(parent, name).to_string_lossy().to_string()
+                } else {
+                    let _ = std::fs::remove_dir_all(&item.dest_path);
+                    item.dest_path.clone()
+                };
+                let src_c = item.src_path.clone();
+                std::thread::spawn(move || {
+                    std::fs::create_dir_all(&out_dir).ok();
+                    let ext = std::path::Path::new(&src_c).extension().map(|e| e.to_str().unwrap_or("").to_lowercase()).unwrap_or_default();
+                    let _ = match ext.as_str() {
+                        "zip" => std::process::Command::new("unzip").args(["-q", &src_c, "-d", &out_dir]).status(),
+                        "gz" | "tgz" | "bz2" | "xz" | "zst" | "tar" => std::process::Command::new("tar").args(["xf", &src_c, "-C", &out_dir]).status(),
+                        _ => std::process::Command::new("7z").args(["x", &src_c, &format!("-o{}", out_dir), "-y"]).status(),
+                    };
+                });
+            } else if let Ok(Some(action)) = execute_transfer_item(&item.src_path, &item.dest_path, item.is_copy, choice) {
                 diag.completed_undo_actions.push(action);
             }
             diag.current_idx += 1;
@@ -2289,7 +2320,7 @@ fn collect_dir_conflicts_recursive(
     }
 }
 
-fn get_file_summary(path: &str) -> (u64, String, bool) {
+pub fn get_file_summary(path: &str) -> (u64, String, bool) {
     let p = std::path::Path::new(path);
     let is_dir = p.is_dir();
     let meta = std::fs::metadata(path).ok();
@@ -2436,6 +2467,8 @@ pub struct TabEntry {
     pub label:       String,  // klasör adı
     pub entries:     Option<std::sync::Arc<Vec<FileEntry>>>,
     pub view_mode:   Option<ViewMode>,
+    pub sort_by:     Option<SortBy>,
+    pub sort_asc:    Option<bool>,
 }
 
 impl TabEntry {
@@ -2445,7 +2478,7 @@ impl TabEntry {
             .unwrap_or_else(|| path.clone());
         let mut history = VecDeque::new();
         history.push_back(path.clone());
-        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None, view_mode: None }
+        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None, view_mode: None, sort_by: None, sort_asc: None }
     }
 
     pub fn update_label(&mut self) {
@@ -2852,6 +2885,34 @@ mod tests {
         assert_eq!(state.preview_cache.len(), 1);
         state.preview_cache.clear();
         assert_eq!(state.preview_cache.len(), 0);
+    }
+
+    #[test]
+    fn test_tab_sort_isolation() {
+        let mut state = AppState::new();
+        // Tab 0 default
+        assert_eq!(state.dir.sort_by, SortBy::Name);
+        assert!(state.dir.sort_asc);
+
+        // Change sort in Tab 0
+        state.dir.sort_by = SortBy::Modified;
+        state.dir.sort_asc = false;
+        state.tabs.active_mut().sort_by = Some(SortBy::Modified);
+        state.tabs.active_mut().sort_asc = Some(false);
+
+        // Open Tab 1
+        state.open_in_new_tab("/home".into());
+        assert_eq!(state.tabs.active_idx, 1);
+        // Tab 1 should have default Name/Asc, NOT Tab 0's Modified/Desc!
+        assert_eq!(state.dir.sort_by, SortBy::Name);
+        assert!(state.dir.sort_asc);
+
+        // Switch back to Tab 0
+        state.switch_tab(0);
+        assert_eq!(state.tabs.active_idx, 0);
+        // Tab 0 should retain its Modified/Desc sort!
+        assert_eq!(state.dir.sort_by, SortBy::Modified);
+        assert!(!state.dir.sort_asc);
     }
 }
 

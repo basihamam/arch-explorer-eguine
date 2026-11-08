@@ -75,6 +75,20 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
             "android"      => "\u{f17b}", //  Android robot
             "exec"         => "\u{f489}", // terminal / executable gear
             "binary"       => "\u{f489}",
+            "doc"          => "\u{f1c2}",
+            "sheet"        => "\u{f1c3}",
+            "slide"        => "\u{f1c4}",
+            "rust"         => "\u{e7a8}",
+            "python"       => "\u{e73c}",
+            "js"           => "\u{e74e}",
+            "ts"           => "\u{e628}",
+            "html"         => "\u{e736}",
+            "css"          => "\u{e749}",
+            "json"         => "\u{e60b}",
+            "c"            => "\u{e61e}",
+            "cpp"          => "\u{e61d}",
+            "database"     => "\u{f1c0}",
+            "font"         => "\u{f031}",
             _              => "\u{f15b}",
         },
         IconStyle::Emoji => match name {
@@ -131,20 +145,57 @@ pub fn icon(t: &AexTheme, name: &str) -> &'static str {
 // ── File-type icon string (returns String — fine for label/text uses) ─────────
 pub fn file_icon(t: &AexTheme, e: &FileEntry) -> &'static str {
     if e.is_dir { return icon(t, "folder"); }
-    if e.is_executable { return icon(t, "exec"); }
     let ext = std::path::Path::new(&e.name)
         .extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg" => icon(t, "image"),
-        "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"              => icon(t, "video"),
-        "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma" => icon(t, "audio"),
-        "zip"|"tar"|"gz"|"bz2"|"xz"|"zst"|"7z"|"rar"     => icon(t, "archive"),
-        "pdf"                                              => icon(t, "pdf"),
-        "rs"|"py"|"js"|"ts"|"go"|"c"|"cpp"|"h"|"lua"
-        |"rb"|"sh"|"toml"|"json"|"yaml"|"yml"
-        |"svelte"|"html"|"css"|"md"                       => icon(t, "code"),
-        _                                                  => icon(t, "file"),
+
+    // Windows executables & libraries get the dedicated Windows icon (NOT the console icon!)
+    if matches!(ext.as_str(), "exe" | "msi" | "dll" | "bat" | "cmd" | "reg" | "scr") {
+        return icon(t, "windows");
     }
+
+    // Media
+    if matches!(ext.as_str(), "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg"|"tiff"|"avif") {
+        return icon(t, "image");
+    }
+    if matches!(ext.as_str(), "mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts") {
+        return icon(t, "video");
+    }
+    if matches!(ext.as_str(), "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma") {
+        return icon(t, "audio");
+    }
+    if matches!(ext.as_str(), "zip"|"tar"|"gz"|"bz2"|"xz"|"zst"|"7z"|"rar"|"tgz"|"tbz2") {
+        return icon(t, "archive");
+    }
+    if matches!(ext.as_str(), "iso"|"img"|"dmg"|"qcow2"|"vdi") {
+        return icon(t, "disk");
+    }
+
+    // Documents
+    if ext == "pdf" { return icon(t, "pdf"); }
+    if matches!(ext.as_str(), "doc"|"docx"|"odt"|"rtf") { return icon(t, "doc"); }
+    if matches!(ext.as_str(), "xls"|"xlsx"|"ods"|"csv"|"tsv") { return icon(t, "sheet"); }
+    if matches!(ext.as_str(), "ppt"|"pptx"|"odp") { return icon(t, "slide"); }
+    if matches!(ext.as_str(), "txt"|"log"|"nfo"|"md"|"markdown") { return icon(t, "text"); }
+
+    // Code & configs
+    if ext == "rs" { return icon(t, "rust"); }
+    if ext == "py" { return icon(t, "python"); }
+    if matches!(ext.as_str(), "js"|"mjs"|"cjs") { return icon(t, "js"); }
+    if matches!(ext.as_str(), "ts"|"tsx") { return icon(t, "ts"); }
+    if matches!(ext.as_str(), "html"|"htm") { return icon(t, "html"); }
+    if matches!(ext.as_str(), "css"|"scss"|"sass"|"less") { return icon(t, "css"); }
+    if ext == "json" { return icon(t, "json"); }
+    if ext == "c" || ext == "h" { return icon(t, "c"); }
+    if matches!(ext.as_str(), "cpp"|"hpp"|"cc"|"cxx") { return icon(t, "cpp"); }
+    if matches!(ext.as_str(), "db"|"sqlite"|"sqlite3"|"sql") { return icon(t, "database"); }
+    if matches!(ext.as_str(), "ttf"|"otf"|"woff"|"woff2") { return icon(t, "font"); }
+    if matches!(ext.as_str(), "toml"|"yaml"|"yml"|"ini"|"conf"|"cfg") { return icon(t, "settings"); }
+    if matches!(ext.as_str(), "sh"|"bash"|"zsh"|"fish") { return icon(t, "terminal"); }
+
+    // Binary executables without extension
+    if e.is_executable { return icon(t, "exec"); }
+
+    icon(t, "file")
 }
 
 // ── Icon color by file type ───────────────────────────────────────────────────
@@ -152,16 +203,22 @@ pub fn icon_color_for_entry(t: &AexTheme, e: &FileEntry) -> egui::Color32 {
     use crate::theme::types::hex_to_color32;
     let c = &t.colors;
     if e.is_dir { return hex_to_color32(&c.accent); }
-    if e.is_executable { return hex_to_color32(&c.accent); }
     let ext = std::path::Path::new(&e.name)
         .extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+
+    if matches!(ext.as_str(), "exe" | "msi" | "dll" | "bat" | "cmd" | "reg") {
+        return egui::Color32::from_rgb(0, 164, 239); // Microsoft Blue
+    }
     match ext.as_str() {
         "png"|"jpg"|"jpeg"|"gif"|"webp"|"ico"|"bmp"|"svg" => hex_to_color32(&c.success),
         "mp4"|"mkv"|"avi"|"mov"|"webm"                    => hex_to_color32(&c.warning),
         "mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma" => hex_to_color32(&c.info),
         "zip"|"tar"|"gz"|"bz2"|"xz"|"7z"|"rar"           => hex_to_color32(&c.accent_dim),
         "pdf"                                              => hex_to_color32(&c.danger),
-        "rs"|"py"|"js"|"ts"|"go"                          => hex_to_color32(&c.info),
+        "rs"                                               => egui::Color32::from_rgb(222, 114, 60),
+        "py"                                               => egui::Color32::from_rgb(75, 139, 190),
+        "js"|"ts"                                          => egui::Color32::from_rgb(240, 219, 79),
+        _ if e.is_executable                               => hex_to_color32(&c.accent),
         _                                                  => hex_to_color32(&c.text_secondary),
     }
 }

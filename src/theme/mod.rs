@@ -54,6 +54,12 @@ pub fn load_theme_file(path: &Path) -> anyhow::Result<AexTheme> {
 
 /// İsme göre tema yükle — arama yollarında "name.aex" dosyasını bulur
 pub fn load_theme_by_name(name: &str) -> Option<AexTheme> {
+    // 1. Built-in temalarda var mı? (catppuccin-mocha, nord, gruvbox, rose-pine vb.)
+    let builtins = defaults::builtin_themes();
+    if let Some(theme) = builtins.get(name) {
+        return Some(theme.clone());
+    }
+
     let filename = if name.ends_with(".aex") {
         name.to_string()
     } else {

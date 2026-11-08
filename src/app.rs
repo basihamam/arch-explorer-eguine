@@ -704,14 +704,36 @@ impl ArchExplorer {
                 }
                 BackendMsg::DirectoryPermissionDenied(path) => {
                     self.state.dir.is_loading = false;
-                    self.state.pending_root_auth = Some(crate::state::RootAuthRequest {
-                        title: format!("\"{}\" dizinine erişmek için Root (Sudo) yetkisi gerekiyor", path),
-                        cmd: "ls".to_string(),
-                        args: vec![path.clone()],
-                        reload: true,
-                        auth_type: Some(format!("dir_access:{}", path)),
-                    });
-                    self.state.pending_root_wrong = false;
+                    // Eğer root şifresi zaten önceden girildiyse (cache'de varsa) kullanıcıya tekrar sorma!
+                    if let Some(cached_pw) = crate::backend::fs_ops::get_root_password() {
+                        let tx = self.tx.clone();
+                        let show_hidden = self.state.dir.show_hidden;
+                        let path_c = path.clone();
+                        std::thread::spawn(move || {
+                            match crate::backend::fs_ops::list_directory_with_sudo(path_c.clone(), show_hidden, &cached_pw) {
+                                Ok(listing) => {
+                                    tx.send(BackendMsg::DirectoryLoaded(listing)).ok();
+                                }
+                                Err(err) => {
+                                    if err == "WRONG_PASSWORD" {
+                                        crate::backend::fs_ops::clear_root_password();
+                                        tx.send(BackendMsg::RootAuthWrongPassword).ok();
+                                    } else {
+                                        tx.send(BackendMsg::DirectoryError(err)).ok();
+                                    }
+                                }
+                            }
+                        });
+                    } else {
+                        self.state.pending_root_auth = Some(crate::state::RootAuthRequest {
+                            title: format!("\"{}\" dizinine erişmek için Root (Sudo) yetkisi gerekiyor", path),
+                            cmd: "ls".to_string(),
+                            args: vec![path.clone()],
+                            reload: true,
+                            auth_type: Some(format!("dir_access:{}", path)),
+                        });
+                        self.state.pending_root_wrong = false;
+                    }
                 }
                 BackendMsg::BookmarksLoaded(bms) => {
                     self.state.sidebar.bookmarks = bms;
@@ -990,7 +1012,36 @@ impl eframe::App for ArchExplorer {
 
         // 3d. Pending extract
         if let Some((archive, dest)) = self.state.pending_extract.take() {
-            self.extract_archive(archive, dest);
+            let name = std::path::Path::new(&archive)
+                .file_stem().map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "extracted".into());
+            let name = if name.ends_with(".tar") { name[..name.len()-4].to_string() } else { name };
+            let target_out = format!("{}/{}", dest.trim_end_matches('/'), name);
+
+            if std::path::Path::new(&target_out).exists() {
+                let (dst_sz, dst_mod, _) = crate::state::get_file_summary(&target_out);
+                let (src_sz, src_mod, _) = crate::state::get_file_summary(&archive);
+                self.state.conflict_dialog = Some(crate::state::ConflictDialogState {
+                    queue: vec![crate::state::ConflictItem {
+                        src_path: archive.clone(),
+                        dest_path: target_out.clone(),
+                        is_copy: true,
+                        is_dir: true,
+                        src_size: src_sz,
+                        dest_size: dst_sz,
+                        src_modified: src_mod,
+                        dest_modified: dst_mod,
+                    }],
+                    current_idx: 0,
+                    apply_to_all: false,
+                    policy_file: None,
+                    policy_dir: None,
+                    completed_undo_actions: Vec::new(),
+                    dest_dir: dest.clone(),
+                });
+            } else {
+                self.extract_archive(archive, dest);
+            }
         }
 
         // 3e. Du size request
@@ -1159,9 +1210,10 @@ impl ArchExplorer {
             }
 
             // Ctrl+V / Event::Paste — Paste
-            let is_paste = (i.key_pressed(Key::V) && i.modifiers.ctrl)
+            let is_paste = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-            if is_paste && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
+            let search_box_active = self.state.search.active && !self.state.search.query.is_empty();
+            if is_paste && self.state.rename_target.is_none() && !search_box_active && !term_typing {
                 let target_dir = self.state.active_context_path();
                 if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                     let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
@@ -1169,6 +1221,7 @@ impl ArchExplorer {
                         let _ = crate::backend::clipboard::clipboard_clear();
                     }
                     self.state.start_transfer(cb.paths, target_dir, is_copy);
+                    ctx.request_repaint();
                 }
             }
 
@@ -2103,6 +2156,9 @@ fn render_root_auth_dialog(
     let ph = 240.0_f32;
     let d_rect = Rect::from_center_size(screen.center(), Vec2::new(pw, ph));
 
+    let pass_id = Id::new("root_auth_pass");
+    let show_id = Id::new("root_auth_show");
+
     egui::Area::new(Id::new("root_auth_backdrop"))
         .fixed_pos(screen.min).order(Order::Background)
         .show(ctx, |ui| {
@@ -2112,14 +2168,20 @@ fn render_root_auth_dialog(
             if r.clicked() && click_pos.map(|p| !d_rect.contains(p) && p.y > 36.0).unwrap_or(false) {
                 state.pending_root_auth = None;
                 state.pending_root_wrong = false;
+                ctx.data_mut(|d| {
+                    d.remove::<String>(pass_id);
+                    d.remove::<bool>(Id::new("root_pw_foc"));
+                });
             }
         });
 
-    let pass_id = Id::new("root_auth_pass");
-    let show_id = Id::new("root_auth_show");
-    let mut password: String = ctx.data_mut(|d| d.get_temp(pass_id).unwrap_or_default());
-    let mut show_pw: bool = ctx.data_mut(|d| d.get_temp(show_id).unwrap_or(false));
     let wrong = state.pending_root_wrong;
+    let mut password: String = if wrong {
+        ctx.data_mut(|d| d.get_temp(pass_id).unwrap_or_default())
+    } else {
+        String::new()
+    };
+    let mut show_pw: bool = ctx.data_mut(|d| d.get_temp(show_id).unwrap_or(false));
 
     egui::Area::new(Id::new("root_auth_dialog"))
         .fixed_pos(d_rect.min)
@@ -2141,6 +2203,10 @@ fn render_root_auth_dialog(
                         if ui.small_button("✕").clicked() {
                             state.pending_root_auth = None;
                             state.pending_root_wrong = false;
+                            ctx.data_mut(|d| {
+                                d.remove::<String>(pass_id);
+                                d.remove::<bool>(Id::new("root_pw_foc"));
+                            });
                         }
                     });
                 });
@@ -2194,6 +2260,10 @@ fn render_root_auth_dialog(
                         {
                             state.pending_root_auth = None;
                             state.pending_root_wrong = false;
+                            ctx.data_mut(|d| {
+                                d.remove::<String>(pass_id);
+                                d.remove::<bool>(Id::new("root_pw_foc"));
+                            });
                         }
                     });
                 });
@@ -2394,14 +2464,25 @@ fn render_root_auth_dialog(
             });
         });
 
-    ctx.data_mut(|d| {
-        d.insert_temp(pass_id, password);
-        d.insert_temp(show_id, show_pw);
-    });
+    if state.pending_root_auth.is_none() {
+        ctx.data_mut(|d| {
+            d.remove::<String>(pass_id);
+            d.remove::<bool>(Id::new("root_pw_foc"));
+        });
+    } else {
+        ctx.data_mut(|d| {
+            d.insert_temp(pass_id, password);
+            d.insert_temp(show_id, show_pw);
+        });
+    }
 
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         state.pending_root_auth = None;
         state.pending_root_wrong = false;
+        ctx.data_mut(|d| {
+            d.remove::<String>(pass_id);
+            d.remove::<bool>(Id::new("root_pw_foc"));
+        });
     }
 }
 
