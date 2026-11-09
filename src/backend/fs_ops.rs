@@ -1338,16 +1338,23 @@ fn save_bookmarks(bm: &[Bookmark]) -> Result<(), String> {
 
 // ---- Internal helpers ----
 
-fn resolve_name_conflict(dir: &Path, name: &str) -> PathBuf {
+pub fn resolve_name_conflict(dir: &Path, name: &str) -> PathBuf {
     let dest = dir.join(name);
     if !dest.exists() { return dest; }
 
-    let stem = Path::new(name).file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| name.to_string());
-    let ext = Path::new(name).extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let p = Path::new(name);
+    let is_dir = dest.is_dir();
+    let (stem, ext) = if is_dir {
+        (name.to_string(), String::new())
+    } else {
+        let stem = p.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let ext = p.extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        (stem, ext)
+    };
 
     for i in 2..=999 {
         let candidate = dir.join(format!("{} ({}){}", stem, i, ext));

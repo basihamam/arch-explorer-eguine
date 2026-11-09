@@ -353,8 +353,8 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         col_ui.spacing_mut().item_spacing = Vec2::new(0.0, gap);
                         for &idx in &col_assignments[c] {
                             let entry = &entries[idx];
-                            let has_item_below = col_assignments[c].last() != Some(&idx);
-                            let item_hit = masonry_grid_item(col_ui, t, state, entry, entries, col_w, thumb_q, idx, has_item_below);
+                            let can_expand = col_assignments[c].last() == Some(&idx);
+                            let item_hit = masonry_grid_item(col_ui, t, state, entry, entries, col_w, thumb_q, idx, can_expand);
                             current_frame_rects.push(item_hit);
                             rendered_entries.push(entry.clone());
                         }
@@ -386,13 +386,16 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 for row_idx in start_row..end_row {
                     let row_start = row_idx * cols;
                     let row_end = (row_start + cols).min(total_count);
+                    let is_last_row = (row_idx + 1) >= total_rows;
 
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
                         for idx in row_start..row_end {
                             let entry = &entries[idx];
                             let has_item_below = (idx + cols) < total_count;
-                            let item_hit = grid_item(ui, t, state, entry, entries, item_w, item_h, thumb_q, idx, has_item_below);
+                            // İsim uzaması SADECE son satırdaki öğelerde yapılabilir!
+                            let can_expand = is_last_row && !has_item_below;
+                            let item_hit = grid_item(ui, t, state, entry, entries, item_w, item_h, thumb_q, idx, can_expand);
                             current_frame_rects.push(item_hit);
                             rendered_entries.push(entry.clone());
                         }
@@ -511,7 +514,7 @@ fn masonry_grid_item(
     item_w: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
-    has_item_below: bool,
+    can_expand: bool,
 ) -> GridHitArea {
     let c = &t.colors;
     let s = &t.shape;
@@ -539,17 +542,17 @@ fn masonry_grid_item(
     let name_font  = (item_w * 0.102).clamp(9.5, 12.5);
     let badge_font = (item_w * 0.080).clamp(8.0, 10.5);
     let font_id = FontId::new(name_font, FontFamily::Proportional);
-    let max_text_w = (item_w - 8.0).max(10.0);
+    let max_text_w = (item_w + 4.0).max(24.0);
 
-    // Eğer altta item yoksa max 20 satır, aksi halde 2 satır
-    let max_lines = if has_item_below { 2 } else { 20 };
+    // Standart öğelerde maksimum 3 satır; yalnızca sonda ve altında öğe yoksa (can_expand) 20 satır
+    let max_lines = if can_expand { 20 } else { 3 };
     let name_lines = wrap_name_multiline_measured(ui, &entry.name, &font_id, max_text_w, max_lines);
 
     let line_spacing = name_font * 1.20;
-    let label_h = if has_item_below {
-        (name_lines.len() as f32 * line_spacing + 4.0).clamp(16.0, 36.0)
-    } else {
+    let label_h = if can_expand {
         (name_lines.len() as f32 * line_spacing + 4.0).max(16.0)
+    } else {
+        (name_lines.len() as f32 * line_spacing + 4.0).clamp(16.0, 52.0)
     };
     let has_badge = entry.is_dir || entry.size > 0;
     let badge_h = if has_badge { badge_font + 6.0 } else { 0.0 };
@@ -695,14 +698,14 @@ fn masonry_grid_item(
                 icon_color.r(), icon_color.g(), icon_color.b(),
                 (255.0 * opacity) as u8,
             );
-            let icon_galley = ui.painter().layout_no_wrap(
-                icon_str.to_string(),
+            let icon_center = Pos2::new(rect.center().x, (rect.min.y + 3.0 + label_top_y) / 2.0);
+            painter.text(
+                icon_center,
+                Align2::CENTER_CENTER,
+                icon_str,
                 icon_font_id,
                 icon_color_tinted,
             );
-            let icon_center = Pos2::new(rect.center().x, thumb_rect.center().y);
-            let icon_pos = icon_center - icon_galley.size() / 2.0;
-            painter.galley(icon_pos, icon_galley, icon_color_tinted);
         }
 
         let name_center_y = rect.min.y + thumb_h + 6.0 + label_h / 2.0;
@@ -853,7 +856,7 @@ fn grid_item(
     item_h: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
-    has_item_below: bool,
+    can_expand: bool,
 ) -> GridHitArea {
     let c      = &t.colors;
     let s      = &t.shape;
@@ -861,7 +864,7 @@ fn grid_item(
     let is_cut = false;
     let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
 
-    let max_text_w = (item_w - 8.0).max(20.0);
+    let max_text_w = (item_w + 4.0).max(24.0);
     let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
     let sub_font   = (name_font * 0.86).clamp(8.5, 10.5);
     let name_font_id = FontId::new(name_font, FontFamily::Proportional);
@@ -869,14 +872,16 @@ fn grid_item(
     let line_spacing = name_font * 1.20;
     let sub_line_step = sub_font * 1.25;
 
-    // Multi-line filename wrapping (Nemo style satır başı)
-    let max_lines = if has_item_below { 2 } else { 20 };
+    // Multi-line filename wrapping:
+    // Standart öğelerde maksimum 3 satır (10-15 karakter daha fazla gösterim).
+    // Yalnızca son satırda ve altında öğe yoksa (can_expand) 20 satıra kadar tam isim göster!
+    let max_lines = if can_expand { 20 } else { 3 };
     let name_lines = wrap_name_multiline_measured(ui, &entry.name, &name_font_id, max_text_w, max_lines);
 
     let icon_area_h = (item_h * 0.52).round();
     let label_top_y_offset = icon_area_h + 3.0;
 
-    let total_card_h = if has_item_below {
+    let total_card_h = if !can_expand {
         item_h
     } else {
         let name_pill_h = name_lines.len() as f32 * line_spacing + 4.0;
@@ -889,13 +894,13 @@ fn grid_item(
         Sense::click_and_drag(),
     );
 
+    let label_top_y = rect.min.y + label_top_y_offset;
+
     // Visual calculations: Proportional layout coordinates (Nemo style)
     let max_thumb_w = (item_w - 12.0).max(24.0);
     let max_thumb_h = (icon_area_h - 6.0).max(24.0);
-    let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
+    let visual_center = Pos2::new(rect.center().x, (rect.min.y + 3.0 + label_top_y) / 2.0);
     let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, item_w, max_thumb_w, max_thumb_h, thumb_q);
-
-    let label_top_y = rect.min.y + label_top_y_offset;
 
     let text_w = name_lines.iter().map(|line| {
         let galley = ui.painter().layout_no_wrap(line.clone(), name_font_id.clone(), Color32::WHITE);
@@ -903,7 +908,7 @@ fn grid_item(
     }).fold(0.0_f32, f32::max);
     let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
 
-    let (name_pill_h, y_name, y_size, y_type, label_bottom_y) = if has_item_below {
+    let (name_pill_h, y_name, y_size, y_type, label_bottom_y) = if !can_expand {
         let label_avail_h = (rect.min.y + item_h - 3.0 - label_top_y).max(18.0);
         let pill_h = if is_renaming {
             20.0_f32
@@ -938,17 +943,6 @@ fn grid_item(
         Pos2::new(rect.center().x, y_name),
         Vec2::new(name_text_w, name_pill_h),
     );
-
-    let sub_line_step = sub_font * 1.25;
-    let y_size = (y_name + name_pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.max.y - sub_line_step - 2.0);
-    let y_type = (y_size + sub_line_step).min(rect.max.y - 4.0);
-    let label_bottom_y = if y_type < rect.max.y - 1.0 && y_type > y_size + sub_font * 0.8 {
-        y_type + sub_font * 0.7
-    } else if y_size < rect.max.y - 2.0 {
-        y_size + sub_font * 0.7
-    } else {
-        label_pill_rect.max.y
-    };
 
     // Nemo connected hitbox layout:
     // 1) Thumbnail hitbox: bounds of thumbnail/icon with 2px margin on left, top, right;
@@ -1043,14 +1037,14 @@ fn grid_item(
                 (255.0 * opacity) as u8,
             );
 
-            let icon_galley = ui.painter().layout_no_wrap(
-                icon_str.to_string(),
+            let icon_center = Pos2::new(rect.center().x, (rect.min.y + 3.0 + label_top_y) / 2.0);
+            painter.text(
+                icon_center,
+                Align2::CENTER_CENTER,
+                icon_str,
                 icon_font_id,
                 icon_color_tinted,
             );
-            let icon_center = Pos2::new(rect.center().x, visual_center.y);
-            let icon_pos = icon_center - icon_galley.size() / 2.0;
-            painter.galley(icon_pos, icon_galley, icon_color_tinted);
         }
 
         // Symlink indicator
@@ -4033,14 +4027,18 @@ mod tests {
         let item_h = rect.height();
 
         let icon_area_h = (item_h * 0.52).round();
-        let max_thumb_h = (icon_area_h - 6.0).max(24.0);
-        let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
+        let label_top_y = rect.min.y + icon_area_h + 3.0;
+        let visual_center = Pos2::new(rect.center().x, (rect.min.y + 3.0 + label_top_y) / 2.0);
 
         // Icon center X must mathematically equal rect.center().x
         assert_eq!(visual_center.x, rect.center().x);
 
+        // Dikey simetri: İkon merkezi rect.min.y + 3.0 ile label_top_y'nin tam ortasında olmalı
+        let top_gap = visual_center.y - (rect.min.y + 3.0);
+        let bottom_gap = label_top_y - visual_center.y;
+        assert!((top_gap - bottom_gap).abs() < 0.001, "İkonun üst ve alt boşluğu birebir eşit ve simetrik olmalı: {} vs {}", top_gap, bottom_gap);
+
         // Name pill center X must mathematically equal rect.center().x
-        let label_top_y = rect.min.y + icon_area_h + 3.0;
         let name_text_w = 80.0_f32;
         let name_pill_h = 24.0_f32;
         let y_name = label_top_y + name_pill_h / 2.0;
@@ -4075,7 +4073,7 @@ mod tests {
         // Yalnızca ve yalnızca son satır (2) kesildiğinde ellipsis almalıdır
         assert!(lines[2].ends_with('…'), "Son satır 2 kesildiğinde '…' ile bitmelidir: {}", lines[2]);
 
-        // 2 satır sınırı ile (standart grid has_item_below = true)
+        // 2 satır sınırı ile
         let lines_2 = wrap_name_multiline(long_name, 14, 2);
         assert_eq!(lines_2.len(), 2);
         assert!(!lines_2[0].contains('…'), "2 satırlı modda satır 0 asla ellipsis içeremez: {}", lines_2[0]);
@@ -4091,23 +4089,24 @@ mod tests {
 
         let long_name = "very_long_project_database_backup_archive_2026_q4_uncompressed.tar.gz";
 
-        // has_item_below == true durumu: max_lines = 2
+        // can_expand == false durumu: max_lines = 3 (standart öğeler 3 satır)
         let lines_with_below = ctx.fonts(|f| {
-            wrap_name_multiline_with_measure(long_name, 2, max_text_w, |s| {
+            wrap_name_multiline_with_measure(long_name, 3, max_text_w, |s| {
                 f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE).size().x
             })
         });
-        assert_eq!(lines_with_below.len(), 2);
+        assert_eq!(lines_with_below.len(), 3);
         assert!(!lines_with_below[0].contains('…'), "Satır 0 asla ellipsis içeremez");
-        assert!(lines_with_below[1].ends_with('…'), "Satır 1 kesildiği için ellipsis almalı");
+        assert!(!lines_with_below[1].contains('…'), "Satır 1 asla ellipsis içeremez");
+        assert!(lines_with_below[2].ends_with('…'), "Satır 2 kesildiği için ellipsis almalı");
 
-        // has_item_below == false durumu: max_lines = 20 (altında öğe yok, tüm isim satır atlayarak tam gözükür)
+        // can_expand == true durumu: max_lines = 20 (altında öğe yok, tüm isim satır atlayarak tam gözükür)
         let lines_no_below = ctx.fonts(|f| {
             wrap_name_multiline_with_measure(long_name, 20, max_text_w, |s| {
                 f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE).size().x
             })
         });
-        // 3 veya daha fazla satır oluşturmalı
+        // 4 veya daha fazla satır oluşturmalı
         assert!(lines_no_below.len() >= 3, "Altında öğe yokken en az 3 satıra bölünmeli, oluşan: {}", lines_no_below.len());
         // HİÇBİR satırda (son satır dahil!) ellipsis olmamalıdır çünkü ismin tamamı sığmıştır!
         for (i, line) in lines_no_below.iter().enumerate() {
@@ -4128,24 +4127,68 @@ mod tests {
         let label_top_y_offset = icon_area_h + 3.0; // 55.0
         let label_avail_h = (item_h - 3.0 - label_top_y_offset).max(18.0); // 42.0
 
-        // 4 satırlık uzun bir isim
-        let four_line_count = 4;
+        // 5 satırlık uzun bir isim
+        let five_line_count = 5;
 
-        // has_item_below == true iken: max 2 satır, name_pill_h label_avail_h ile sınırlı
-        let pill_h_with_item_below = (2.0_f32 * line_spacing + 4.0).min(label_avail_h - 2.0);
-        assert_eq!(pill_h_with_item_below, 28.0);
+        // can_expand == false iken: max 3 satır, name_pill_h label_avail_h ile sınırlı
+        let pill_h_standard = (3.0_f32 * line_spacing + 4.0).min(label_avail_h - 2.0); // 40.0
+        assert_eq!(pill_h_standard, 40.0);
 
-        // has_item_below == false iken: name_pill_h satır sayısıyla büyür!
-        let pill_h_no_item_below = four_line_count as f32 * line_spacing + 4.0; // 4 * 12.0 + 4.0 = 52.0
-        assert_eq!(pill_h_no_item_below, 52.0);
-        assert!(pill_h_no_item_below > pill_h_with_item_below);
+        // can_expand == true iken: name_pill_h satır sayısıyla büyür!
+        let pill_h_expanded = five_line_count as f32 * line_spacing + 4.0; // 5 * 12.0 + 4.0 = 64.0
+        assert_eq!(pill_h_expanded, 64.0);
+        assert!(pill_h_expanded > pill_h_standard);
 
         // total_card_h de buna göre büyür
         let sub_font = (name_font * 0.86).clamp(8.5, 10.5); // 8.6
         let sub_line_step = sub_font * 1.25;
-        let needed_h = label_top_y_offset + pill_h_no_item_below + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0;
+        let needed_h = label_top_y_offset + pill_h_expanded + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0;
         let total_card_h = needed_h.max(item_h);
         assert!(total_card_h > item_h, "Kart yüksekliği genişleyen isme göre büyümelidir: {} > {}", total_card_h, item_h);
+    }
+
+    #[test]
+    fn test_last_row_only_expansion_rule() {
+        // 6 sütunlu grid, 7 eleman
+        let cols = 6;
+        let total_count = 7;
+        let total_rows = (total_count + cols - 1) / cols; // 2 satır
+        assert_eq!(total_rows, 2);
+
+        // Satır 0 (row_idx = 0):
+        let row_0_is_last = (0 + 1) >= total_rows;
+        assert!(!row_0_is_last, "Satır 0 son satır değildir");
+        // İndeks 1..6 için has_item_below false olsa bile can_expand FALSE olmalı!
+        for idx in 0..6 {
+            let has_item_below = (idx + cols) < total_count;
+            let can_expand = row_0_is_last && !has_item_below;
+            assert!(!can_expand, "Satır 0'daki öğe {} ASLA genişleyemez", idx);
+        }
+
+        // Satır 1 (row_idx = 1):
+        let row_1_is_last = (1 + 1) >= total_rows;
+        assert!(row_1_is_last, "Satır 1 son satırdır");
+        let idx = 6;
+        let has_item_below = (idx + cols) < total_count;
+        let can_expand = row_1_is_last && !has_item_below;
+        assert!(can_expand, "Son satırdaki altında öğe olmayan öğe {} genişleyebilir", idx);
+    }
+
+    #[test]
+    fn test_max_chars_increased_with_three_lines_and_wider_text() {
+        let name_font = 10.0_f32;
+        let item_w = 100.0_f32;
+
+        // Eski sınırlar: max_lines = 2, max_text_w = item_w - 8.0 (92.0)
+        let old_chars_per_line = ((item_w - 8.0) / (name_font * 0.52)) as usize; // ~17 chars
+        let old_capacity = old_chars_per_line * 2; // ~34 chars
+
+        // Yeni sınırlar: max_lines = 3, max_text_w = item_w + 4.0 (104.0)
+        let new_chars_per_line = ((item_w + 4.0) / (name_font * 0.52)) as usize; // ~20 chars
+        let new_capacity = new_chars_per_line * 3; // ~60 chars
+
+        // Kapasite artışı en az 15 karakter olmalı!
+        assert!(new_capacity >= old_capacity + 15, "Yeni kapasite ({}) eskiden ({}) en az 15 karakter fazla olmalı", new_capacity, old_capacity);
     }
 }
 

@@ -831,16 +831,25 @@ impl SelectionState {
 pub struct SearchState {
     pub active: bool,
     pub query: String,
+    pub is_focused: bool,
+    pub request_focus: bool,
 }
 
 impl SearchState {
     fn new() -> Self {
-        Self { active: false, query: String::new() }
+        Self {
+            active: false,
+            query: String::new(),
+            is_focused: false,
+            request_focus: false,
+        }
     }
 
     pub fn clear(&mut self) {
         self.active = false;
         self.query.clear();
+        self.is_focused = false;
+        self.request_focus = false;
     }
 }
 
@@ -1421,6 +1430,7 @@ pub struct TransferRequest {
     pub sources: Vec<String>,
     pub dest_dir: String,
     pub copy: bool,
+    pub target_paths: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -2234,6 +2244,7 @@ impl AppState {
                 sources,
                 dest_dir,
                 copy,
+                target_paths: None,
             });
             return;
         }
@@ -2241,6 +2252,7 @@ impl AppState {
         // Yerel transfer çakışma kontrolü
         let mut conflicts = Vec::new();
         let mut direct_sources = Vec::new();
+        let mut direct_targets = Vec::new();
 
         for src in &sources {
             let src_path = std::path::Path::new(src);
@@ -2259,8 +2271,35 @@ impl AppState {
 
             if src == &dst {
                 if !copy {
-                    continue;
+                    continue; // Aynı dosyayı kendi üzerine taşıma anlamsız (no-op)
                 }
+                // Aynı dizinde kopyalama: Çakışma penceresi açma! Otomatik "dosya (2).ext" oluştur
+                let mut unique_dst = crate::backend::fs_ops::resolve_name_conflict(
+                    std::path::Path::new(&dest_dir),
+                    &fname,
+                );
+                let p = std::path::Path::new(&fname);
+                let is_dir = src_path.is_dir();
+                let (stem, ext) = if is_dir {
+                    (fname.clone(), String::new())
+                } else {
+                    let stem = p.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| fname.clone());
+                    let ext = p.extension()
+                        .map(|e| format!(".{}", e.to_string_lossy()))
+                        .unwrap_or_default();
+                    (stem, ext)
+                };
+                let mut counter = 2;
+                while direct_targets.contains(&unique_dst.to_string_lossy().to_string()) {
+                    counter += 1;
+                    unique_dst = std::path::Path::new(&dest_dir).join(format!("{} ({}){}", stem, counter, ext));
+                }
+
+                direct_sources.push(src.clone());
+                direct_targets.push(unique_dst.to_string_lossy().to_string());
+                continue;
             }
 
             if dst_path.exists() {
@@ -2278,6 +2317,7 @@ impl AppState {
                 });
             } else {
                 direct_sources.push(src.clone());
+                direct_targets.push(dst);
             }
         }
 
@@ -2296,6 +2336,7 @@ impl AppState {
                     sources: direct_sources,
                     dest_dir,
                     copy,
+                    target_paths: Some(direct_targets),
                 });
             }
         } else {
@@ -2305,6 +2346,7 @@ impl AppState {
                 sources: direct_sources,
                 dest_dir,
                 copy,
+                target_paths: Some(direct_targets),
             });
         }
     }
@@ -3134,6 +3176,51 @@ mod tests {
         assert_eq!(state.tabs.active_idx, 1);
         assert_eq!(state.view_mode, ViewMode::List);
         assert!((state.view_scale - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_same_dir_copy_auto_rename() {
+        let temp_dir = std::env::temp_dir().join(format!("ae_test_samedir_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let src_file = temp_dir.join("document.txt");
+        std::fs::write(&src_file, "hello same dir copy").unwrap();
+
+        let mut state = AppState::new();
+        let src_str = src_file.to_string_lossy().to_string();
+        let dest_dir_str = temp_dir.to_string_lossy().to_string();
+
+        // 1. First copy in same dir: should NOT open conflict dialog!
+        state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
+        assert!(state.conflict_dialog.is_none(), "Conflict dialog must NOT open for same dir copy");
+        assert!(state.pending_transfer.is_some());
+
+        let req = state.pending_transfer.take().unwrap();
+        assert_eq!(req.sources, vec![src_str.clone()]);
+        assert_eq!(req.dest_dir, dest_dir_str);
+        assert!(req.copy);
+        assert!(req.target_paths.is_some());
+        let targets = req.target_paths.unwrap();
+        assert_eq!(targets.len(), 1);
+        let expected_copy1 = temp_dir.join("document (2).txt").to_string_lossy().to_string();
+        assert_eq!(targets[0], expected_copy1);
+
+        // Execute transfer of first copy
+        let res = execute_transfer_item(&req.sources[0], &targets[0], true, ConflictChoice::Replace);
+        assert!(res.is_ok());
+        assert!(std::path::Path::new(&expected_copy1).exists());
+        assert_eq!(std::fs::read_to_string(&expected_copy1).unwrap(), "hello same dir copy");
+
+        // 2. Second copy in same dir: should produce "document (3).txt"
+        state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
+        assert!(state.conflict_dialog.is_none());
+        let req2 = state.pending_transfer.take().unwrap();
+        let targets2 = req2.target_paths.unwrap();
+        let expected_copy2 = temp_dir.join("document (3).txt").to_string_lossy().to_string();
+        assert_eq!(targets2[0], expected_copy2);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

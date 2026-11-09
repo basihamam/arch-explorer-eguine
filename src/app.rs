@@ -602,7 +602,9 @@ impl ArchExplorer {
                     progress: prog,
                 }).ok();
 
-                let dst = format!("{}/{}", req.dest_dir.trim_end_matches('/'), fname);
+                let dst = req.target_paths.as_ref()
+                    .and_then(|t| t.get(idx).cloned())
+                    .unwrap_or_else(|| format!("{}/{}", req.dest_dir.trim_end_matches('/'), fname));
 
                 match crate::state::execute_transfer_item(src, &dst, req.copy, crate::state::ConflictChoice::Replace) {
                     Ok(Some(action)) => {
@@ -1202,11 +1204,12 @@ impl ArchExplorer {
             }
 
             let term_typing = self.state.terminal.open && self.state.terminal.is_focused;
+            let search_focused = self.state.search.active && self.state.search.is_focused;
 
             // Ctrl+C / Event::Copy — Copy
             let is_copy = (i.key_pressed(Key::C) && i.modifiers.ctrl)
                 || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
-            if is_copy && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
+            if is_copy && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let count = paths.len();
@@ -1218,7 +1221,7 @@ impl ArchExplorer {
             // Ctrl+X / Event::Cut — Cut
             let is_cut = (i.key_pressed(Key::X) && i.modifiers.ctrl)
                 || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
-            if is_cut && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
+            if is_cut && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let count = paths.len();
@@ -1228,12 +1231,32 @@ impl ArchExplorer {
             }
 
             // Ctrl+V / Event::Paste — Paste
+            let paste_event_text = i.events.iter().find_map(|e| {
+                if let egui::Event::Paste(text) = e {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            });
             let is_paste = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
-            let search_box_active = self.state.search.active && !self.state.search.query.is_empty();
-            if is_paste && self.state.rename_target.is_none() && !search_box_active && !term_typing {
+                || paste_event_text.is_some();
+            if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let target_dir = self.state.active_context_path();
-                if let Some(cb) = crate::backend::clipboard::clipboard_get() {
+                let cb_opt = crate::backend::clipboard::clipboard_get().or_else(|| {
+                    paste_event_text.as_deref().and_then(|text| {
+                        let paths = crate::backend::clipboard::parse_uri_list_string(text);
+                        if !paths.is_empty() {
+                            Some(crate::backend::clipboard::ClipboardState {
+                                op: crate::backend::clipboard::ClipboardOp::Copy,
+                                paths,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+                if let Some(cb) = cb_opt {
                     let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                     if !is_copy {
                         let _ = crate::backend::clipboard::clipboard_clear();
@@ -1250,7 +1273,7 @@ impl ArchExplorer {
             }
 
             // View modes: Ctrl+1 (Grid), Ctrl+2 (List), Ctrl+3 (Compact)
-            if !term_typing && !self.state.search.active && self.state.rename_target.is_none() {
+            if !term_typing && !search_focused && self.state.rename_target.is_none() {
                 if i.key_pressed(Key::Num1) && i.modifiers.ctrl {
                     self.state.set_view_mode_for_current_dir(crate::state::ViewMode::Grid);
                 }
@@ -1263,7 +1286,7 @@ impl ArchExplorer {
             }
 
             // Arrow keys for file selection and Shift+Arrow for range selection
-            if !term_typing && !self.state.search.active && self.state.rename_target.is_none() {
+            if !term_typing && !search_focused && self.state.rename_target.is_none() {
                 let entries_len = self.state.dir.entries.len();
                 if entries_len > 0 {
                     let mut move_dir: Option<isize> = None;
@@ -1301,7 +1324,7 @@ impl ArchExplorer {
             }
 
             // Delete & Shift+Delete — Dosyaları Sil / Çöp Kutusuna Taşı / Çöp Kutusundaysa Kalıcı Sil
-            if i.key_pressed(Key::Delete) && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
+            if i.key_pressed(Key::Delete) && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
                 if !paths.is_empty() {
                     let is_in_trash = self.state.nav.current_path.starts_with("trash:")
@@ -1313,7 +1336,7 @@ impl ArchExplorer {
 
             // Left / Right Arrow Video Seek & Space Play/Pause (Medya oynatılıyorsa)
             if (self.state.media_player.is_playing || self.state.media_player.is_paused) 
-                && self.state.rename_target.is_none() && !self.state.search.active && !term_typing 
+                && self.state.rename_target.is_none() && !search_focused && !term_typing 
             {
                 if i.key_pressed(Key::ArrowLeft) && !i.modifiers.alt {
                     self.state.media_player.seek_relative(-5.0);
@@ -1329,6 +1352,7 @@ impl ArchExplorer {
             // Search focus
             if i.key_pressed(Key::F) && i.modifiers.ctrl && !term_typing {
                 self.state.search.active = true;
+                self.state.search.request_focus = true;
             }
 
             // Escape — panelleri kapat, seçimi temizle
@@ -1352,7 +1376,7 @@ impl ArchExplorer {
             }
 
             // Ctrl+D — Duplicate
-            if i.key_pressed(Key::D) && i.modifiers.ctrl && self.state.rename_target.is_none() && !self.state.search.active && !term_typing {
+            if i.key_pressed(Key::D) && i.modifiers.ctrl && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 self.state.duplicate_selected();
             }
 
@@ -1663,9 +1687,15 @@ impl ArchExplorer {
                     // ── Sol pane body ──────────────────────────────────────
                     let (left_body_rect, left_body_resp) = ui.allocate_exact_size(egui::Vec2::new(pane_w, body_h), egui::Sense::hover());
 
+                    let ptr_pos = ui.ctx().pointer_interact_pos()
+                        .or_else(|| ui.ctx().pointer_latest_pos())
+                        .or_else(|| ui.ctx().pointer_hover_pos())
+                        .or_else(|| ui.input(|i| i.pointer.latest_pos()));
+                    let left_hovered = left_body_resp.hovered() || ptr_pos.map_or(false, |p| left_body_rect.contains(p));
+
                     // Drag & Drop onto inactive left pane (evaluated before children run)
-                    if !left_active && self.state.drag.dragging && left_body_resp.hovered() {
-                        ui.painter().rect_stroke(left_body_rect, egui::Rounding::same(t.shape.radius_sm), egui::Stroke::new(1.5, t.colors.accent()));
+                    if !left_active && self.state.drag.dragging && left_hovered {
+                        ui.painter().rect_stroke(left_body_rect, egui::Rounding::same(t.shape.radius_sm), egui::Stroke::new(1.5_f32, t.colors.accent()));
                         if ui.input(|i| i.pointer.any_released()) {
                             if let Some(ref snap) = snap_clone {
                                 let dest = snap.nav.current_path.clone();
@@ -1693,10 +1723,11 @@ impl ArchExplorer {
 
                     // ── Sağ pane body ──────────────────────────────────────
                     let (right_body_rect, right_body_resp) = ui.allocate_exact_size(egui::Vec2::new(pane_w, body_h), egui::Sense::hover());
+                    let right_hovered = right_body_resp.hovered() || ptr_pos.map_or(false, |p| right_body_rect.contains(p));
 
                     // Drag & Drop onto inactive right pane (evaluated before children run)
-                    if left_active && self.state.drag.dragging && right_body_resp.hovered() {
-                        ui.painter().rect_stroke(right_body_rect, egui::Rounding::same(t.shape.radius_sm), egui::Stroke::new(1.5, t.colors.warning()));
+                    if left_active && self.state.drag.dragging && right_hovered {
+                        ui.painter().rect_stroke(right_body_rect, egui::Rounding::same(t.shape.radius_sm), egui::Stroke::new(1.5_f32, t.colors.warning()));
                         if ui.input(|i| i.pointer.any_released()) {
                             if let Some(ref snap) = snap_clone {
                                 let dest = snap.nav.current_path.clone();
@@ -1854,9 +1885,60 @@ impl ArchExplorer {
                 false
             };
 
-            if is_from_self || self.state.drag.dragging {
-                log::debug!("Dahili sürükleme aynı pencereye bırakıldı veya iptal edildi, harici transfer atlanıyor: {:?}", paths);
+            if self.state.drag.dragging {
+                // Dahili sürükleme aktifken dropped_files geldi:
+                // Eğer widget'lar (klasör veya sekme) drop'u henüz yakalamadıysa, fare altındaki pane/dizine transferi tamamla!
+                let target_dir = if let Some(target) = self.state.drag.target_dir.take() {
+                    target
+                } else if self.state.dual_pane {
+                    let screen_w = ctx.screen_rect().width();
+                    let ptr_x = ctx.pointer_interact_pos()
+                        .or_else(|| ctx.pointer_latest_pos())
+                        .or_else(|| ctx.pointer_hover_pos())
+                        .or_else(|| ctx.input(|i| i.pointer.latest_pos()))
+                        .map(|p| p.x)
+                        .unwrap_or(0.0);
+
+                    let sidebar_w = if ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("sidebar_collapsed")).unwrap_or(false)) {
+                        0.0
+                    } else {
+                        t.layout.sidebar_width
+                    };
+                    let content_w = (screen_w - sidebar_w).max(100.0);
+                    let mid_x = sidebar_w + content_w / 2.0;
+
+                    let left_active = self.state.active_pane == crate::state::PaneId::Left;
+                    if ptr_x > mid_x {
+                        if left_active {
+                            self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
+                        } else {
+                            self.state.active_context_path()
+                        }
+                    } else {
+                        if left_active {
+                            self.state.active_context_path()
+                        } else {
+                            self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
+                        }
+                    }
+                } else {
+                    self.state.active_context_path()
+                };
+
+                let copy_mode = self.state.drag.copy_mode;
+                let sources = if !paths.is_empty() { paths.clone() } else { self.state.drag.sources.clone() };
                 self.state.drag.cancel();
+                self.state.drag.last_drag_sources.clear();
+                self.state.drag.last_drag_time = None;
+
+                if !sources.is_empty() {
+                    log::info!("Dahili sürükleme hedef dizine aktarılıyor -> {}: {:?}", target_dir, sources);
+                    self.state.notify.info(format!("{} öğe aktarılıyor -> {}", sources.len(), target_dir));
+                    self.state.start_transfer(sources, target_dir, copy_mode);
+                    ctx.request_repaint();
+                }
+            } else if is_from_self {
+                log::debug!("Dahili sürükleme zaten UI tarafından ele alındı, mükerrer aktarım atlanıyor.");
                 self.state.drag.last_drag_sources.clear();
                 self.state.drag.last_drag_time = None;
             } else if !paths.is_empty() {

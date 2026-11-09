@@ -321,25 +321,41 @@ except Exception:
 /// Clipboard içeriğini görüntüle (UI'da "kesilmiş" dosyaları soluklaştırmak için)
 /// Eğer dahili clipboard boşsa veya güncel değilse sistem panosundan (Wayland/X11) dosyaları okur
 pub fn clipboard_get() -> Option<ClipboardState> {
-    if let Ok(guard) = CLIPBOARD.lock() {
-        if let Some(ref cb) = *guard {
-            return Some(cb.clone());
-        }
-    }
-
-    // Dahili pano boşsa sistem panosunu oku (Firefox, Chrome, Nautilus, Dolphin vb.)
     let system_paths = get_files_from_system_clipboard();
-    if !system_paths.is_empty() {
-        return Some(ClipboardState {
-            op: ClipboardOp::Copy,
-            paths: system_paths,
-        });
+
+    if let Ok(mut guard) = CLIPBOARD.lock() {
+        if !system_paths.is_empty() {
+            // Eğer sistem panosunda yeni dosya yolları varsa, dahili panoyu güncelle
+            if let Some(ref cb) = *guard {
+                if cb.paths == system_paths {
+                    return Some(cb.clone());
+                }
+            }
+            let new_cb = ClipboardState {
+                op: ClipboardOp::Copy,
+                paths: system_paths,
+            };
+            *guard = Some(new_cb.clone());
+            return Some(new_cb);
+        } else if let Some(ref cb) = *guard {
+            // Sistem panosundan dosya okunamadıysa dahili panodaki geçerli dosyaları kullan
+            let valid_paths: Vec<String> = cb.paths.iter()
+                .filter(|p| std::path::Path::new(p).exists())
+                .cloned()
+                .collect();
+            if !valid_paths.is_empty() {
+                return Some(ClipboardState {
+                    op: cb.op.clone(),
+                    paths: valid_paths,
+                });
+            }
+        }
     }
 
     None
 }
 
-/// Wayland (wl-paste) ve X11 (xclip) üzerinden panodaki dosya yollarını çeker
+/// Wayland (wl-paste), X11 (xclip) ve arboard üzerinden panodaki dosya yollarını çeker
 pub fn get_files_from_system_clipboard() -> Vec<String> {
     // 1. Wayland text/uri-list
     if let Ok(out) = std::process::Command::new("wl-paste")
@@ -383,7 +399,7 @@ pub fn get_files_from_system_clipboard() -> Vec<String> {
         }
     }
 
-    // 4. X11 xclip
+    // 4. X11 xclip text/uri-list
     if let Ok(out) = std::process::Command::new("xclip")
         .args(["-selection", "clipboard", "-t", "text/uri-list", "-o"])
         .output()
@@ -397,13 +413,37 @@ pub fn get_files_from_system_clipboard() -> Vec<String> {
         }
     }
 
+    // 5. X11 xclip plain text
+    if let Ok(out) = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-o"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let paths = parse_uri_list_string(&s);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
+    // 6. arboard::Clipboard ile doğrudan metin / dosya yolu okuma
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        if let Ok(text) = cb.get_text() {
+            let paths = parse_uri_list_string(&text);
+            if !paths.is_empty() {
+                return paths;
+            }
+        }
+    }
+
     Vec::new()
 }
 
 pub fn parse_uri_list_string(raw: &str) -> Vec<String> {
     let mut results = Vec::new();
     for line in raw.lines() {
-        let trimmed = line.trim();
+        let trimmed = line.trim().trim_matches(|c| c == '\'' || c == '"');
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "copy" || trimmed == "cut" {
             continue;
         }
@@ -1021,6 +1061,43 @@ mod tests {
 
         let res = undo_last().unwrap();
         assert_eq!(res.restored_paths, vec![test_file]);
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_paste_shortcut_handling() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let test_dir = format!("/tmp/ae_test_paste_sc_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let f1 = format!("{}/doc1.txt", test_dir);
+        let f2 = format!("{}/doc2.txt", test_dir);
+        fs::write(&f1, "doc1 content").unwrap();
+        fs::write(&f2, "doc2 content").unwrap();
+
+        // Test 1: parse_uri_list_string with file:// URI scheme
+        let uri_data = format!("file://{}\nfile://{}\n", f1, f2);
+        let parsed = parse_uri_list_string(&uri_data);
+        assert_eq!(parsed, vec![f1.clone(), f2.clone()]);
+
+        // Test 2: parse_uri_list_string with GNOME clipboard prefix
+        let gnome_data = format!("copy\nfile://{}\n", f1);
+        let parsed_gnome = parse_uri_list_string(&gnome_data);
+        assert_eq!(parsed_gnome, vec![f1.clone()]);
+
+        // Test 3: parse_uri_list_string with plain paths & quoted paths
+        let plain_quoted = format!("\"{}\"\n'{}'\n", f1, f2);
+        let parsed_plain = parse_uri_list_string(&plain_quoted);
+        assert_eq!(parsed_plain, vec![f1.clone(), f2.clone()]);
+
+        // Test 4: clipboard_copy and clipboard_get integration
+        clipboard_copy(vec![f1.clone()]).unwrap();
+        let cb = clipboard_get();
+        assert!(cb.is_some());
+        let cb = cb.unwrap();
+        assert_eq!(cb.op, ClipboardOp::Copy);
+        assert_eq!(cb.paths, vec![f1]);
 
         let _ = fs::remove_dir_all(&test_dir);
     }

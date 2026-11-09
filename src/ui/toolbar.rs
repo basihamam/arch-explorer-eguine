@@ -155,6 +155,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
             } else if show_search_btn {
                 if nav_btn(ui, t, icon(t, "search"), true, || {}).on_hover_text("Search (Ctrl+F)").clicked() {
                     state.search.active = true;
+                    state.search.request_focus = true;
                 }
             }
 
@@ -292,6 +293,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState) {
                                     if !show_search_btn && !state.search.active {
                                         if menu_action_item(ui, t, icon(t, "search"), "Search (Ctrl+F)", false, false).clicked() {
                                             state.search.active = true;
+                                            state.search.request_focus = true;
                                             close_popup = true;
                                         }
                                     }
@@ -834,7 +836,11 @@ fn search_bar(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) {
             .font(FontId::new(t.typography.size_sm, FontFamily::Proportional))
             .text_color(c.text_primary())
     );
-    resp.request_focus();
+    if state.search.request_focus {
+        resp.request_focus();
+        state.search.request_focus = false;
+    }
+    state.search.is_focused = resp.has_focus();
 
     if resp.changed() {
         // Debounce — fire pending search after 280ms (handled in app.rs)

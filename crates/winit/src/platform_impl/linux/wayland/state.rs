@@ -726,6 +726,15 @@ impl DataDeviceHandler for WinitState {
                 self.current_drag_offer = Some((window_id, offer.clone()));
             }
         }
+        let scale_factor = self.windows.borrow().get(&window_id)
+            .map(|w| w.lock().unwrap().scale_factor())
+            .unwrap_or(1.0);
+        let device_id = crate::event::DeviceId::dummy();
+        let position = crate::dpi::LogicalPosition::new(_x, _y).to_physical(scale_factor);
+        self.events_sink.push_window_event(
+            crate::event::WindowEvent::CursorMoved { device_id, position },
+            window_id,
+        );
         self.events_sink.push_window_event(crate::event::WindowEvent::HoveredFile(std::path::PathBuf::new()), window_id);
     }
 
@@ -743,11 +752,21 @@ impl DataDeviceHandler for WinitState {
         _x: f64,
         _y: f64,
     ) {
-        if let Some((_, offer)) = &self.current_drag_offer {
+        if let Some((window_id, offer)) = &self.current_drag_offer {
             if let Some(mime) = pick_dnd_mime_type(offer) {
                 offer.accept_mime_type(offer.serial, Some(mime));
             }
             offer.set_actions(DndAction::Copy, DndAction::Copy);
+            let window_id = *window_id;
+            let scale_factor = self.windows.borrow().get(&window_id)
+                .map(|w| w.lock().unwrap().scale_factor())
+                .unwrap_or(1.0);
+            let device_id = crate::event::DeviceId::dummy();
+            let position = crate::dpi::LogicalPosition::new(_x, _y).to_physical(scale_factor);
+            self.events_sink.push_window_event(
+                crate::event::WindowEvent::CursorMoved { device_id, position },
+                window_id,
+            );
         }
     }
 
@@ -765,6 +784,15 @@ impl DataDeviceHandler for WinitState {
         _data_device: &WlDataDevice,
     ) {
         if let Some((window_id, offer)) = self.current_drag_offer.take() {
+            let device_id = crate::event::DeviceId::dummy();
+            self.events_sink.push_window_event(
+                crate::event::WindowEvent::MouseInput {
+                    device_id,
+                    state: crate::event::ElementState::Released,
+                    button: crate::event::MouseButton::Left,
+                },
+                window_id,
+            );
             let mime = pick_dnd_mime_type(&offer).unwrap_or_else(|| "text/uri-list".to_string());
             offer.accept_mime_type(offer.serial, Some(mime.clone()));
             offer.set_actions(DndAction::Copy, DndAction::Copy);
