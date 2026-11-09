@@ -446,10 +446,14 @@ fn get_grid_thumb_rect(
     ctx: &egui::Context,
     entry: &FileEntry,
     thumb_center: Pos2,
+    item_w: f32,
     max_thumb_w: f32,
     max_thumb_h: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
 ) -> Rect {
+    let icon_box_sz = (item_w * 0.50).clamp(26.0, 64.0);
+    let tight_icon_rect = Rect::from_center_size(thumb_center, Vec2::splat(icon_box_sz));
+
     let ext = entry.extension.to_lowercase();
     let is_media = !entry.is_dir && matches!(ext.as_str(),
         "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg"
@@ -457,7 +461,7 @@ fn get_grid_thumb_rect(
         |"mp3"|"flac"|"ogg"|"wav"|"aac"|"m4a"|"opus"|"wma");
 
     if !is_media {
-        return Rect::from_center_size(thumb_center, Vec2::new(max_thumb_w, max_thumb_h));
+        return tight_icon_rect;
     }
 
     if ext == "gif" {
@@ -491,7 +495,7 @@ fn get_grid_thumb_rect(
         }
     }
 
-    Rect::from_center_size(thumb_center, Vec2::new(max_thumb_w, max_thumb_h))
+    tight_icon_rect
 }
 
 fn masonry_grid_item(
@@ -573,6 +577,28 @@ fn masonry_grid_item(
     );
 
     // Nemo connected hitbox layout:
+    // Tightened icon box for masonry when not media or thumbnail not yet ready
+    let icon_box_sz = (item_w * 0.50).clamp(26.0, 64.0);
+    let visual_thumb = if is_media {
+        let has_thumb = if entry.extension.eq_ignore_ascii_case("gif") {
+            let gif_id = egui::Id::new(format!("gif_cache_{}", entry.path));
+            let frames: Option<Vec<egui::TextureHandle>> = ui.ctx().data_mut(|d| d.get_temp(gif_id));
+            frames.map_or(false, |f| !f.is_empty())
+        } else {
+            let cache_key = format!("thumb_{}_{}", entry.path, thumb_q.suffix());
+            let thumb_id = egui::Id::new(&cache_key);
+            let handle: Option<egui::TextureHandle> = ui.ctx().data_mut(|d| d.get_temp(thumb_id));
+            handle.is_some()
+        };
+        if has_thumb {
+            thumb_rect
+        } else {
+            Rect::from_center_size(Pos2::new(rect.center().x, thumb_rect.center().y), Vec2::splat(icon_box_sz))
+        }
+    } else {
+        Rect::from_center_size(Pos2::new(rect.center().x, thumb_rect.center().y), Vec2::splat(icon_box_sz))
+    };
+
     // 1) Thumbnail hitbox: bounds of thumbnail box with 2px margin on left, top, right;
     //    extending its bottom margin all the way down to connect seamlessly with the label hitbox!
     // 2) Label hitbox: text/pill bounds with ~2px margin, extending its top up to meet thumbnail.
@@ -580,11 +606,11 @@ fn masonry_grid_item(
     let thumb_margin = 2.0_f32;
     let label_margin = 2.0_f32;
     let thumb_hit = Rect::from_min_max(
-        Pos2::new(thumb_rect.min.x - thumb_margin, thumb_rect.min.y - thumb_margin),
-        Pos2::new(thumb_rect.max.x + thumb_margin, (label_top_y + 1.0).max(thumb_rect.max.y + thumb_margin)),
+        Pos2::new(visual_thumb.min.x - thumb_margin, visual_thumb.min.y - thumb_margin),
+        Pos2::new(visual_thumb.max.x + thumb_margin, (label_top_y + 1.0).max(visual_thumb.max.y + thumb_margin)),
     );
     let label_hit = Rect::from_min_max(
-        Pos2::new(label_pill_rect.min.x - label_margin, thumb_rect.max.y.min(label_top_y - label_margin)),
+        Pos2::new(label_pill_rect.min.x - label_margin, visual_thumb.max.y.min(label_top_y - label_margin)),
         Pos2::new(label_pill_rect.max.x + label_margin, label_bottom_y + label_margin),
     );
 
@@ -653,14 +679,20 @@ fn masonry_grid_item(
         if !drew_thumb {
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
-            let icon_font = (item_w * 0.32).clamp(16.0, 48.0);
-            painter.text(
-                thumb_rect.center(),
-                Align2::CENTER_CENTER,
-                icon_str,
-                FontId::new(icon_font, FontFamily::Monospace),
-                Color32::from_rgba_unmultiplied(icon_color.r(), icon_color.g(), icon_color.b(), (255.0 * opacity) as u8),
+            let icon_font = (item_w * 0.46).clamp(24.0, 60.0);
+            let icon_font_id = FontId::new(icon_font, FontFamily::Monospace);
+            let icon_color_tinted = Color32::from_rgba_unmultiplied(
+                icon_color.r(), icon_color.g(), icon_color.b(),
+                (255.0 * opacity) as u8,
             );
+            let icon_galley = ui.painter().layout_no_wrap(
+                icon_str.to_string(),
+                icon_font_id,
+                icon_color_tinted,
+            );
+            let icon_center = Pos2::new(rect.center().x, thumb_rect.center().y);
+            let icon_pos = icon_center - icon_galley.size() / 2.0;
+            painter.galley(icon_pos, icon_galley, icon_color_tinted);
         }
 
         let name_center_y = rect.min.y + thumb_h + 6.0 + label_h / 2.0;
@@ -821,9 +853,8 @@ fn grid_item(
     let icon_area_h = (item_h * 0.52).round();
     let max_thumb_w = (item_w - 12.0).max(24.0);
     let max_thumb_h = (icon_area_h - 6.0).max(24.0);
-    let visual_center = rect.min + Vec2::new(item_w / 2.0, 3.0 + max_thumb_h / 2.0);
-    let thumb_box_rect = Rect::from_center_size(visual_center, Vec2::new(max_thumb_w, max_thumb_h));
-    let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, max_thumb_w, max_thumb_h, thumb_q);
+    let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
+    let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, item_w, max_thumb_w, max_thumb_h, thumb_q);
 
     let max_text_w = (item_w - 8.0).max(20.0);
     let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
@@ -950,18 +981,21 @@ fn grid_item(
         if !drew_thumb {
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
-            let icon_font = (item_w * 0.36).clamp(18.0, 50.0);
-
-            painter.text(
-                visual_center,
-                Align2::CENTER_CENTER,
-                icon_str,
-                FontId::new(icon_font, FontFamily::Monospace),
-                Color32::from_rgba_unmultiplied(
-                    icon_color.r(), icon_color.g(), icon_color.b(),
-                    (255.0 * opacity) as u8
-                ),
+            let icon_font = (item_w * 0.46).clamp(24.0, 60.0);
+            let icon_font_id = FontId::new(icon_font, FontFamily::Monospace);
+            let icon_color_tinted = Color32::from_rgba_unmultiplied(
+                icon_color.r(), icon_color.g(), icon_color.b(),
+                (255.0 * opacity) as u8,
             );
+
+            let icon_galley = ui.painter().layout_no_wrap(
+                icon_str.to_string(),
+                icon_font_id,
+                icon_color_tinted,
+            );
+            let icon_center = Pos2::new(rect.center().x, visual_center.y);
+            let icon_pos = icon_center - icon_galley.size() / 2.0;
+            painter.galley(icon_pos, icon_galley, icon_color_tinted);
         }
 
         // Symlink indicator
@@ -3073,7 +3107,7 @@ fn draw_grid_thumbnail(
     let icon_area_h = (item_h * 0.52).round();
     let max_thumb_w = (item_w - 12.0).max(24.0);
     let max_thumb_h = (icon_area_h - 6.0).max(24.0);
-    let thumb_center = rect.min + Vec2::new(item_w / 2.0, 3.0 + max_thumb_h / 2.0);
+    let thumb_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
     let tint = Color32::from_rgba_unmultiplied(255, 255, 255,
         if is_cut { 102 } else { (255.0 * opacity) as u8 });
 
@@ -3824,6 +3858,89 @@ mod tests {
         let line_1_y = start_y_multi + 1.0 * line_spacing;
         assert_eq!(line_1_y, 86.0); // +6.0 for line 1
         assert_eq!((start_y_multi + line_1_y) / 2.0, y_name); // Symmetrically centered!
+    }
+
+    #[test]
+    fn test_tightened_icon_box_for_non_media() {
+        let ctx = egui::Context::default();
+        let make_entry = |name: &str, ext: &str, is_dir: bool| FileEntry {
+            name: name.to_string(),
+            path: format!("/tmp/{}", name),
+            is_dir,
+            is_symlink: false,
+            size: 1024,
+            modified: "".to_string(),
+            created: "".to_string(),
+            permissions: "rwxr-xr-x".to_string(),
+            mime_type: "".to_string(),
+            extension: ext.to_string(),
+            hidden: false,
+            is_executable: false,
+        };
+
+        let folder = make_entry("Documents", "", true);
+        let text_doc = make_entry("notes.txt", "txt", false);
+        let rust_code = make_entry("main.rs", "rs", false);
+
+        let item_w = 120.0_f32;
+        let max_thumb_w = 108.0_f32;
+        let max_thumb_h = 60.0_f32;
+        let thumb_center = Pos2::new(100.0, 50.0);
+        let expected_sz = (item_w * 0.50).clamp(26.0, 64.0); // 60.0
+
+        for entry in &[folder, text_doc, rust_code] {
+            let rect = get_grid_thumb_rect(
+                &ctx,
+                entry,
+                thumb_center,
+                item_w,
+                max_thumb_w,
+                max_thumb_h,
+                crate::backend::thumbnails::ThumbQuality::Low,
+            );
+            // Tightened around glyph: 60x60, NOT max_thumb_w (108px)
+            assert_eq!(rect.width(), expected_sz);
+            assert_eq!(rect.height(), expected_sz);
+            assert_eq!(rect.center(), thumb_center);
+            assert!(rect.width() < max_thumb_w);
+        }
+    }
+
+    #[test]
+    fn test_visual_symmetry_mathematical_centering() {
+        let rect = Rect::from_min_size(Pos2::new(50.0, 100.0), Vec2::new(140.0, 175.0));
+        let item_w = rect.width();
+        let item_h = rect.height();
+
+        let icon_area_h = (item_h * 0.52).round();
+        let max_thumb_h = (icon_area_h - 6.0).max(24.0);
+        let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
+
+        // Icon center X must mathematically equal rect.center().x
+        assert_eq!(visual_center.x, rect.center().x);
+
+        // Name pill center X must mathematically equal rect.center().x
+        let label_top_y = rect.min.y + icon_area_h + 3.0;
+        let name_text_w = 80.0_f32;
+        let name_pill_h = 24.0_f32;
+        let y_name = label_top_y + name_pill_h / 2.0;
+        let label_pill_rect = Rect::from_center_size(
+            Pos2::new(rect.center().x, y_name),
+            Vec2::new(name_text_w, name_pill_h),
+        );
+        assert_eq!(label_pill_rect.center().x, rect.center().x);
+
+        // Connected hitbox must also remain symmetrical
+        let icon_box_sz = (item_w * 0.50).clamp(26.0, 64.0);
+        let visual_thumb = Rect::from_center_size(visual_center, Vec2::splat(icon_box_sz));
+        assert_eq!(visual_thumb.center().x, rect.center().x);
+
+        let thumb_margin = 2.0_f32;
+        let thumb_hit = Rect::from_min_max(
+            Pos2::new(visual_thumb.min.x - thumb_margin, visual_thumb.min.y - thumb_margin),
+            Pos2::new(visual_thumb.max.x + thumb_margin, (label_top_y + 1.0).max(visual_thumb.max.y + thumb_margin)),
+        );
+        assert_eq!(thumb_hit.center().x, rect.center().x);
     }
 }
 

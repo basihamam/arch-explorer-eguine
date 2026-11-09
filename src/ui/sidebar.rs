@@ -332,17 +332,20 @@ fn bookmark_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, bm: &Bookmark)
 
     // Context menu
     resp.context_menu(|ui| {
-        if ui.button("Open").clicked() {
-            state.navigate(bm_path.clone());
+        if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+            state.panels.close();
+            state.open_in_new_tab(bm_path.clone());
             ui.close_menu();
         }
-        if ui.button("Open in New Tab").clicked() {
-            state.open_in_new_tab(bm_path.clone());
+        if ui.button("Open").clicked() {
+            state.panels.close();
+            state.navigate(bm_path.clone());
             ui.close_menu();
         }
         ui.separator();
         if ui.button("Remove Bookmark").clicked() {
             crate::backend::fs_ops::remove_bookmark(bm_path).ok();
+            state.sidebar.bookmarks = crate::backend::fs_ops::get_bookmarks();
             ui.close_menu();
         }
     });
@@ -496,6 +499,24 @@ fn device_sidebar_item(
             }
         } else {
             state.panels.open_mount();
+        }
+    }
+
+    if dev.is_mounted {
+        if let Some(ref mp) = dev.mount_point {
+            let mp_path = mp.clone();
+            resp.context_menu(|ui| {
+                if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+                    state.panels.close();
+                    state.open_in_new_tab(mp_path.clone());
+                    ui.close_menu();
+                }
+                if ui.button("Open").clicked() {
+                    state.panels.close();
+                    state.navigate(mp_path.clone());
+                    ui.close_menu();
+                }
+            });
         }
     }
 
@@ -654,6 +675,28 @@ fn adb_sidebar_item(
         }
     }
 
+    let adb_new_tab_path = format!("adb://{}/sdcard", adb_dev.serial);
+    resp.context_menu(|ui| {
+        if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+            if adb_dev.is_authorized {
+                state.panels.close();
+                state.open_in_new_tab(adb_new_tab_path.clone());
+            } else {
+                state.notify.warning("Lütfen telefondan USB Hata Ayıklama iznini onaylayın!".to_string());
+            }
+            ui.close_menu();
+        }
+        if ui.button("Open").clicked() {
+            if adb_dev.is_authorized {
+                state.panels.close();
+                state.navigate(adb_new_tab_path.clone());
+            } else {
+                state.notify.warning("Lütfen telefondan USB Hata Ayıklama iznini onaylayın!".to_string());
+            }
+            ui.close_menu();
+        }
+    });
+
     // Drop files onto phone in sidebar (adb push!)
     let pointer_over_adb = ui.ctx().pointer_interact_pos()
         .or_else(|| ui.ctx().pointer_hover_pos())
@@ -725,6 +768,22 @@ fn quick_item(
 
     if resp.clicked() { on_click(state); }
 
+    if let Some(ref target_path) = drop_target {
+        let tp = target_path.clone();
+        resp.context_menu(|ui| {
+            if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+                state.panels.close();
+                state.open_in_new_tab(tp.clone());
+                ui.close_menu();
+            }
+            if ui.button("Open").clicked() {
+                state.panels.close();
+                state.navigate(tp.clone());
+                ui.close_menu();
+            }
+        });
+    }
+
     // Drop files onto quick item (e.g. Home, Trash)
     if is_drag_over && ui.input(|i| i.pointer.any_released()) {
         if let Some(dest) = drop_target {
@@ -795,5 +854,41 @@ fn sidebar_icon<'a>(t: &AexTheme, key: &str) -> &'static str {
         "server"    => icon(t, "server"),
         "star"      => icon(t, "star"),
         _           => icon(t, "folder"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sidebar_open_in_new_tab() {
+        let mut state = AppState::new();
+        state.nav.current_path = "/home/aiuser".to_string();
+        let initial_tabs = state.tabs.len();
+
+        // 1. Bookmark open in new tab
+        let bm_path = "/home/aiuser/Downloads".to_string();
+        state.open_in_new_tab(bm_path.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 1);
+        assert_eq!(state.nav.current_path, bm_path);
+
+        // 2. Quick item open in new tab
+        let quick_target = "/home/aiuser/Documents".to_string();
+        state.open_in_new_tab(quick_target.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 2);
+        assert_eq!(state.nav.current_path, quick_target);
+
+        // 3. Mounted device open in new tab
+        let mount_point = "/media/usb".to_string();
+        state.open_in_new_tab(mount_point.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 3);
+        assert_eq!(state.nav.current_path, mount_point);
+
+        // 4. ADB device open in new tab
+        let adb_path = "adb://device123/sdcard".to_string();
+        state.open_in_new_tab(adb_path.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 4);
+        assert_eq!(state.nav.current_path, adb_path);
     }
 }

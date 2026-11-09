@@ -491,6 +491,13 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                 "/".to_string()
             };
 
+            root_resp.context_menu(|ui| {
+                if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+                    state.open_in_new_tab(root_target.clone());
+                    ui.close_menu();
+                }
+            });
+
             if state.drag.dragging && root_pointer_over {
                 ui.painter().rect_filled(root_rect.shrink(1.0), Rounding::same(s.radius_sm),
                     Color32::from_rgba_unmultiplied(c.accent().r(), c.accent().g(), c.accent().b(), 40));
@@ -513,6 +520,9 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                 } else {
                     state.navigate(root_target);
                 }
+            }
+            if root_resp.secondary_clicked() {
+                any_seg_clicked = true;
             }
             x += root_w;
         }
@@ -575,14 +585,25 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                         if ell_hover { c.accent() } else { c.text_hint() },
                     );
 
+                    let jump_path = if is_adb_prefix {
+                        format!("{}/{}", base_prefix, segments[0..start_idx].join("/"))
+                    } else {
+                        format!("/{}", segments[0..start_idx].join("/"))
+                    };
+
+                    ell_resp.context_menu(|ui| {
+                        if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+                            state.open_in_new_tab(jump_path.clone());
+                            ui.close_menu();
+                        }
+                    });
+
                     if ell_resp.clicked() {
                         any_seg_clicked = true;
-                        let jump_path = if is_adb_prefix {
-                            format!("{}/{}", base_prefix, segments[0..start_idx].join("/"))
-                        } else {
-                            format!("/{}", segments[0..start_idx].join("/"))
-                        };
                         state.navigate(jump_path);
+                    }
+                    if ell_resp.secondary_clicked() {
+                        any_seg_clicked = true;
                     }
                     if ell_resp.double_clicked() {
                         any_seg_clicked = true;
@@ -667,6 +688,13 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                     color,
                 );
 
+                seg_resp.context_menu(|ui| {
+                    if ui.button("Yeni Sekmede Aç / Open in New Tab").clicked() {
+                        state.open_in_new_tab(nav_path.clone());
+                        ui.close_menu();
+                    }
+                });
+
                 if seg_resp.clicked() {
                     any_seg_clicked = true;
                     if is_last {
@@ -674,6 +702,9 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                     } else {
                         state.navigate(nav_path);
                     }
+                }
+                if seg_resp.secondary_clicked() {
+                    any_seg_clicked = true;
                 }
                 if seg_resp.double_clicked() {
                     any_seg_clicked = true;
@@ -900,5 +931,30 @@ mod tests {
 
         state.set_media_grid_style(MediaGridStyle::Masonry);
         assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
+    }
+
+    #[test]
+    fn test_breadcrumb_open_in_new_tab() {
+        let mut state = AppState::new();
+        state.nav.current_path = "/home/aiuser/Documents".to_string();
+        let initial_tabs = state.tabs.len();
+
+        // 1. Root context menu action
+        let root_target = "/".to_string();
+        state.open_in_new_tab(root_target.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 1);
+        assert_eq!(state.nav.current_path, "/");
+
+        // 2. Segment context menu action
+        let seg_target = "/home/aiuser".to_string();
+        state.open_in_new_tab(seg_target.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 2);
+        assert_eq!(state.nav.current_path, "/home/aiuser");
+
+        // 3. Ellipsis jump context menu action
+        let jump_target = "/home".to_string();
+        state.open_in_new_tab(jump_target.clone());
+        assert_eq!(state.tabs.len(), initial_tabs + 3);
+        assert_eq!(state.nav.current_path, "/home");
     }
 }
