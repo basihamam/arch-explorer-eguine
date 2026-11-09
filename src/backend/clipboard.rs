@@ -319,26 +319,10 @@ except Exception:
 }
 
 /// Clipboard içeriğini görüntüle (UI'da "kesilmiş" dosyaları soluklaştırmak için)
-/// Eğer dahili clipboard boşsa veya güncel değilse sistem panosundan (Wayland/X11) dosyaları okur
+/// Önce dahili panoyu kontrol eder (hızlı ve takılmasız), boşsa sistem panosundan okur
 pub fn clipboard_get() -> Option<ClipboardState> {
-    let system_paths = get_files_from_system_clipboard();
-
-    if let Ok(mut guard) = CLIPBOARD.lock() {
-        if !system_paths.is_empty() {
-            // Eğer sistem panosunda yeni dosya yolları varsa, dahili panoyu güncelle
-            if let Some(ref cb) = *guard {
-                if cb.paths == system_paths {
-                    return Some(cb.clone());
-                }
-            }
-            let new_cb = ClipboardState {
-                op: ClipboardOp::Copy,
-                paths: system_paths,
-            };
-            *guard = Some(new_cb.clone());
-            return Some(new_cb);
-        } else if let Some(ref cb) = *guard {
-            // Sistem panosundan dosya okunamadıysa dahili panodaki geçerli dosyaları kullan
+    if let Ok(guard) = CLIPBOARD.lock() {
+        if let Some(ref cb) = *guard {
             let valid_paths: Vec<String> = cb.paths.iter()
                 .filter(|p| std::path::Path::new(p).exists())
                 .cloned()
@@ -350,6 +334,19 @@ pub fn clipboard_get() -> Option<ClipboardState> {
                 });
             }
         }
+    }
+
+    // Sadece dahili pano boşsa sistem panosunu oku (Firefox, Chrome, Nautilus, Dolphin vb.)
+    let system_paths = get_files_from_system_clipboard();
+    if !system_paths.is_empty() {
+        let new_cb = ClipboardState {
+            op: ClipboardOp::Copy,
+            paths: system_paths,
+        };
+        if let Ok(mut guard) = CLIPBOARD.lock() {
+            *guard = Some(new_cb.clone());
+        }
+        return Some(new_cb);
     }
 
     None

@@ -2269,9 +2269,14 @@ impl AppState {
                 continue;
             }
 
-            if src == &dst {
+            let is_same_file = src == &dst || (dst_path.exists() && match (src_path.canonicalize(), dst_path.canonicalize()) {
+                (Ok(s), Ok(d)) => s == d,
+                _ => false,
+            });
+
+            if is_same_file {
                 if !copy {
-                    continue; // Aynı dosyayı kendi üzerine taşıma anlamsız (no-op)
+                    continue; // Kendi bulunduğu klasöre taşıma / geri bırakma kesinlikle no-op
                 }
                 // Aynı dizinde kopyalama: Çakışma penceresi açma! Otomatik "dosya (2).ext" oluştur
                 let mut unique_dst = crate::backend::fs_ops::resolve_name_conflict(
@@ -2339,7 +2344,7 @@ impl AppState {
                     target_paths: Some(direct_targets),
                 });
             }
-        } else {
+        } else if !direct_sources.is_empty() {
             // Çakışma yok: Dosyaları arka planda aktar ve sağ alttan yüzdeli bildirim göster
             self.notify.update_progress("file_transfer", format!("{} öğe aktarılıyor…", direct_sources.len()), 0.0);
             self.pending_transfer = Some(TransferRequest {
@@ -3180,7 +3185,7 @@ mod tests {
 
     #[test]
     fn test_same_dir_copy_auto_rename() {
-        let temp_dir = std::env::temp_dir().join(format!("ae_test_samedir_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+        let temp_dir = std::env::temp_dir().join(format!("ae_test_samedir_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let src_file = temp_dir.join("document.txt");
@@ -3190,7 +3195,12 @@ mod tests {
         let src_str = src_file.to_string_lossy().to_string();
         let dest_dir_str = temp_dir.to_string_lossy().to_string();
 
-        // 1. First copy in same dir: should NOT open conflict dialog!
+        // 1. Drag & drop file into its own folder (move / !copy): must be NO-OP!
+        state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), false);
+        assert!(state.conflict_dialog.is_none(), "Drop into own folder must NOT open conflict dialog");
+        assert!(state.pending_transfer.is_none(), "Drop into own folder must NOT perform transfer");
+
+        // 2. First copy in same dir: should NOT open conflict dialog!
         state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
         assert!(state.conflict_dialog.is_none(), "Conflict dialog must NOT open for same dir copy");
         assert!(state.pending_transfer.is_some());
@@ -3211,7 +3221,7 @@ mod tests {
         assert!(std::path::Path::new(&expected_copy1).exists());
         assert_eq!(std::fs::read_to_string(&expected_copy1).unwrap(), "hello same dir copy");
 
-        // 2. Second copy in same dir: should produce "document (3).txt"
+        // 3. Second copy in same dir: should produce "document (3).txt"
         state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
         assert!(state.conflict_dialog.is_none());
         let req2 = state.pending_transfer.take().unwrap();

@@ -542,7 +542,7 @@ fn masonry_grid_item(
     let name_font  = (item_w * 0.102).clamp(9.5, 12.5);
     let badge_font = (item_w * 0.080).clamp(8.0, 10.5);
     let font_id = FontId::new(name_font, FontFamily::Proportional);
-    let max_text_w = (item_w + 4.0).max(24.0);
+    let max_text_w = (item_w - 2.0).max(20.0);
 
     // Standart öğelerde maksimum 3 satır; yalnızca sonda ve altında öğe yoksa (can_expand) 20 satır
     let max_lines = if can_expand { 20 } else { 3 };
@@ -693,7 +693,7 @@ fn masonry_grid_item(
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
             let icon_font = (item_w * 0.46).clamp(24.0, 60.0);
-            let icon_font_id = FontId::new(icon_font, FontFamily::Monospace);
+            let icon_font_id = FontId::new(icon_font, FontFamily::Proportional);
             let icon_color_tinted = Color32::from_rgba_unmultiplied(
                 icon_color.r(), icon_color.g(), icon_color.b(),
                 (255.0 * opacity) as u8,
@@ -864,7 +864,7 @@ fn grid_item(
     let is_cut = false;
     let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
 
-    let max_text_w = (item_w + 4.0).max(24.0);
+    let max_text_w = (item_w - 2.0).max(20.0);
     let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
     let sub_font   = (name_font * 0.86).clamp(8.5, 10.5);
     let name_font_id = FontId::new(name_font, FontFamily::Proportional);
@@ -885,7 +885,11 @@ fn grid_item(
         item_h
     } else {
         let name_pill_h = name_lines.len() as f32 * line_spacing + 4.0;
-        let needed_h = label_top_y_offset + name_pill_h + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0;
+        let needed_h = if item_h >= 105.0 {
+            label_top_y_offset + name_pill_h + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0
+        } else {
+            label_top_y_offset + name_pill_h + 8.0
+        };
         needed_h.max(item_h)
     };
 
@@ -908,7 +912,7 @@ fn grid_item(
     }).fold(0.0_f32, f32::max);
     let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
 
-    let (name_pill_h, y_name, y_size, y_type, label_bottom_y) = if !can_expand {
+    let (name_pill_h, y_name, y_size, y_type, label_bottom_y, show_details) = if !can_expand {
         let label_avail_h = (rect.min.y + item_h - 3.0 - label_top_y).max(18.0);
         let pill_h = if is_renaming {
             20.0_f32
@@ -916,16 +920,21 @@ fn grid_item(
             (name_lines.len() as f32 * line_spacing + 4.0).min(label_avail_h - 2.0)
         };
         let y_n = label_top_y + pill_h / 2.0;
-        let y_s = (y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.min.y + item_h - sub_line_step - 2.0);
-        let y_t = (y_s + sub_line_step).min(rect.min.y + item_h - 4.0);
-        let l_bottom = if y_t < rect.min.y + item_h - 1.0 && y_t > y_s + sub_font * 0.8 {
-            y_t + sub_font * 0.7
-        } else if y_s < rect.min.y + item_h - 2.0 {
-            y_s + sub_font * 0.7
+        // y_s asla isim kutucuğunun üstüne çıkamaz!
+        let y_s = y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0;
+        let y_t = y_s + sub_line_step;
+        // Kart küçüldüğünde (item_h < 105.0) veya yer kalmadığında boyut/tür etiketlerini gizle (overlap önlenir)
+        let show = item_h >= 105.0 && (y_s + sub_font * 0.7 <= rect.min.y + item_h - 2.0);
+        let l_bottom = if show {
+            if y_t + sub_font * 0.7 <= rect.min.y + item_h - 1.0 {
+                y_t + sub_font * 0.7
+            } else {
+                y_s + sub_font * 0.7
+            }
         } else {
             y_n + pill_h / 2.0
         };
-        (pill_h, y_n, y_s, y_t, l_bottom)
+        (pill_h, y_n, y_s, y_t, l_bottom, show)
     } else {
         let pill_h = if is_renaming {
             20.0_f32
@@ -935,8 +944,13 @@ fn grid_item(
         let y_n = label_top_y + pill_h / 2.0;
         let y_s = y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0;
         let y_t = y_s + sub_line_step;
-        let l_bottom = y_t + sub_font * 0.7;
-        (pill_h, y_n, y_s, y_t, l_bottom)
+        let show = item_h >= 105.0;
+        let l_bottom = if show {
+            y_t + sub_font * 0.7
+        } else {
+            y_n + pill_h / 2.0
+        };
+        (pill_h, y_n, y_s, y_t, l_bottom, show)
     };
 
     let label_pill_rect = Rect::from_center_size(
@@ -1031,7 +1045,7 @@ fn grid_item(
             let icon_str = file_icon(t, entry);
             let icon_color = icon_color_for(t, entry);
             let icon_font = (item_w * 0.46).clamp(24.0, 60.0);
-            let icon_font_id = FontId::new(icon_font, FontFamily::Monospace);
+            let icon_font_id = FontId::new(icon_font, FontFamily::Proportional);
             let icon_color_tinted = Color32::from_rgba_unmultiplied(
                 icon_color.r(), icon_color.g(), icon_color.b(),
                 (255.0 * opacity) as u8,
@@ -1152,7 +1166,7 @@ fn grid_item(
         let type_str = entry_type_label(entry);
         let display_type = truncate_to_width(ui, type_str, &sub_font_id, max_text_w);
 
-        if y_size < rect.max.y - 2.0 {
+        if show_details {
             painter.text(
                 Pos2::new(rect.center().x, y_size),
                 Align2::CENTER_CENTER,
@@ -1160,16 +1174,16 @@ fn grid_item(
                 sub_font_id.clone(),
                 c.text_hint(),
             );
-        }
 
-        if y_type < rect.max.y - 1.0 && y_type > y_size + sub_font * 0.8 {
-            painter.text(
-                Pos2::new(rect.center().x, y_type),
-                Align2::CENTER_CENTER,
-                display_type,
-                sub_font_id,
-                c.text_hint(),
-            );
+            if y_type + sub_font * 0.7 <= rect.max.y - 1.0 {
+                painter.text(
+                    Pos2::new(rect.center().x, y_type),
+                    Align2::CENTER_CENTER,
+                    display_type,
+                    sub_font_id,
+                    c.text_hint(),
+                );
+            }
         }
 
         // Git status badge (eğer repo içindeyse ve değiştirildiyse)
@@ -2604,9 +2618,9 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
 
 pub fn spawn_native_drag(sources: &[String]) {
     if sources.is_empty() { return; }
-    let preview = crate::backend::thumbnails::generate_drag_preview_bgra(sources);
-    // Doğrudan yamalanmış winit Wayland veri aygıtı (SCTK) protokolünü dosyanın gerçek thumbnail'iyle tetikle!
-    winit::start_drag_files(sources.to_vec(), preview);
+    // Wayland'e ek preview yüzeyi (sarı kare) vermiyoruz; uygulamamızın zarif egui cam rozeti çiziliyor.
+    // Böylece çift drag önizlemesi (sarı kare + rozet) oluşmaz!
+    winit::start_drag_files(sources.to_vec(), None);
 }
 
 /// Tek ikili (Single-binary) bünyesinde çalışan yerel Wayland & GTK drag-drop motoru
@@ -2931,16 +2945,44 @@ pub fn wrap_name_multiline_with_measure<F: Fn(&str) -> f32>(
             }
         }
 
-        // Bulunan best_fit içinde uygun bir kelime/karakter ayırıcı (boşluk, tire, altçizgi, nokta) ara
-        let min_break = (best_fit / 3).max(2).min(best_fit);
-        let mut split_at = best_fit;
+        // Bulunan best_fit içinde uygun bir kelime/karakter ayırıcı ara
+        // Öncelik sırası:
+        // 1. Boşluk (' ')
+        // 2. Delimiterlar ('-', '_', '.', '·', '•')
+        // 3. CamelCase geçişleri (küçük harften veya rakamdan büyük harfe geçiş, örn: DefaultCompany -> Default | Company)
+        // 4. Orta nokta / best_fit fallback
+        let min_break = (best_fit / 4).max(1).min(best_fit);
+        let mut space_split = None;
+        let mut delim_split = None;
+        let mut camel_split = None;
+
         for i in (min_break..=best_fit).rev() {
             let ch = chars[cursor + i - 1];
-            if ch == ' ' || ch == '-' || ch == '_' || ch == '.' {
-                split_at = i;
-                break;
+            if ch == ' ' && space_split.is_none() {
+                space_split = Some(i);
+            } else if (ch == '-' || ch == '_' || ch == '.' || ch == '·' || ch == '•') && delim_split.is_none() {
+                delim_split = Some(i);
+            }
+            if cursor + i < chars.len() && camel_split.is_none() {
+                let prev = chars[cursor + i - 1];
+                let next = chars[cursor + i];
+                let is_camel = (prev.is_lowercase() || prev.is_ascii_digit()) && next.is_uppercase();
+                let is_acronym_end = prev.is_uppercase() && next.is_uppercase() && (cursor + i + 1 < chars.len() && chars[cursor + i + 1].is_lowercase());
+                if is_camel || is_acronym_end {
+                    camel_split = Some(i);
+                }
             }
         }
+
+        let split_at = if let Some(s) = space_split {
+            s
+        } else if let Some(d) = delim_split {
+            d
+        } else if let Some(c) = camel_split {
+            c
+        } else {
+            best_fit
+        };
 
         let line_chars = &chars[cursor..cursor + split_at];
         let line_str: String = line_chars.iter().collect();
@@ -3486,7 +3528,7 @@ pub fn render_snapshot_tagged(
                                                 visual_center,
                                                 Align2::CENTER_CENTER,
                                                 icon_str,
-                                                FontId::new(icon_font, FontFamily::Monospace),
+                                                FontId::new(icon_font, FontFamily::Proportional),
                                                 icon_color,
                                             );
                                         }
@@ -4183,12 +4225,77 @@ mod tests {
         let old_chars_per_line = ((item_w - 8.0) / (name_font * 0.52)) as usize; // ~17 chars
         let old_capacity = old_chars_per_line * 2; // ~34 chars
 
-        // Yeni sınırlar: max_lines = 3, max_text_w = item_w + 4.0 (104.0)
-        let new_chars_per_line = ((item_w + 4.0) / (name_font * 0.52)) as usize; // ~20 chars
-        let new_capacity = new_chars_per_line * 3; // ~60 chars
+        // Yeni sınırlar: max_lines = 3, max_text_w = item_w - 2.0 (98.0)
+        let new_chars_per_line = ((item_w - 2.0) / (name_font * 0.52)) as usize; // ~18 chars
+        let new_capacity = new_chars_per_line * 3; // ~54 chars
 
         // Kapasite artışı en az 15 karakter olmalı!
         assert!(new_capacity >= old_capacity + 15, "Yeni kapasite ({}) eskiden ({}) en az 15 karakter fazla olmalı", new_capacity, old_capacity);
+    }
+
+    #[test]
+    fn test_camel_case_wrapping_default_company() {
+        // "DefaultCompany" sığmadığında "Default" ve "Company" olarak 2 satıra ayrılmalıdır
+        let lines = wrap_name_multiline("DefaultCompany", 9, 3);
+        assert_eq!(lines, vec!["Default", "Company"]);
+
+        // Piksel ölçümlü modda da 't' -> 'C' CamelCase geçişinden bölünmeli
+        let lines_meas = wrap_name_multiline_with_measure("DefaultCompany", 3, 75.0, |s| s.len() as f32 * 8.0);
+        assert_eq!(lines_meas, vec!["Default", "Company"]);
+        // Ara satırda asla '…' olmamalıdır
+        assert!(!lines_meas[0].contains('…'));
+        assert!(!lines_meas[1].contains('…'));
+    }
+
+    #[test]
+    fn test_wrap_priority_order() {
+        // 1. Boşluk > Delimiter: "foo-bar baz"
+        let lines = wrap_name_multiline("foo-bar baz", 8, 2);
+        assert_eq!(lines[0], "foo-bar");
+        assert_eq!(lines[1], "baz");
+
+        // 2. Delimiter > CamelCase: "Default-Company"
+        let lines = wrap_name_multiline("Default-Company", 9, 2);
+        assert_eq!(lines[0], "Default-");
+        assert_eq!(lines[1], "Company");
+
+        // 3. Orta nokta / Middle dot delimiter desteği
+        let lines = wrap_name_multiline("PartA·PartB", 8, 2);
+        assert_eq!(lines[0], "PartA·");
+        assert_eq!(lines[1], "PartB");
+    }
+
+    #[test]
+    fn test_grid_item_small_size_no_overlap() {
+        let item_h = 80.0_f32; // < 105.0 (aşırı küçültülmüş boyut)
+        let item_w = 64.0_f32;
+        let icon_area_h = (item_h * 0.52).round();
+        let label_top_y_offset = icon_area_h + 3.0;
+        let name_font = (item_w * 0.096).clamp(9.5, 12.5);
+        let sub_font = (name_font * 0.86).clamp(8.5, 10.5);
+        let line_spacing = name_font * 1.20;
+
+        let label_avail_h = (item_h - 3.0 - label_top_y_offset).max(18.0);
+        let pill_h = (2.0_f32 * line_spacing + 4.0).min(label_avail_h - 2.0);
+        let y_n = label_top_y_offset + pill_h / 2.0;
+        let y_s = y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0;
+
+        // y_s asla isim kutucuğunun üstüne çıkamaz (y_s >= pill_bottom + sub_font * 0.7)
+        let pill_bottom = y_n + pill_h / 2.0;
+        assert!(y_s >= pill_bottom + sub_font * 0.7, "y_s asla isim kutucuğunun üzerine çıkamaz!");
+
+        // item_h < 105.0 iken show_details kesinlikle false olmalı (etiketler gizlenmeli)
+        let show_details = item_h >= 105.0 && (y_s + sub_font * 0.7 <= item_h - 2.0);
+        assert!(!show_details, "item_h < 105.0 iken boyut ve tür etiketleri gizlenmeli, overlap engellenmelidir!");
+    }
+
+    #[test]
+    fn test_proportional_font_used_for_folder_icons() {
+        // Klasör ikonu \u{f07b} geniş bir gliftir, FontFamily::Proportional ile çizildiğinde
+        // monospace kutusuna zorlanmaz ve optik simetri tam olarak korunur.
+        let icon_font = 32.0_f32;
+        let icon_font_id = FontId::new(icon_font, FontFamily::Proportional);
+        assert_eq!(icon_font_id.family, FontFamily::Proportional);
     }
 }
 

@@ -1087,6 +1087,17 @@ impl eframe::App for ArchExplorer {
         // 6. Klavye kısayolları
         self.handle_shortcuts(ctx);
 
+        // Drag cleanup: Eğer sürükleme aktif görünüyorsa ama sol fare tuşu basılı değilse (dışarıda bırakılmış veya iptal edilmişse),
+        // sürükleme durumunu derhal sıfırla!
+        if self.state.drag.dragging {
+            let is_mouse_down = ctx.input(|i| i.pointer.primary_down() || i.pointer.button_down(egui::PointerButton::Primary) || i.pointer.any_down());
+            if !is_mouse_down {
+                self.state.drag.cancel();
+                self.state.drag.last_drag_sources.clear();
+                self.state.drag.last_drag_time = None;
+            }
+        }
+
         // Sync global dragging flag into ctx data
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("is_file_dragging"), self.state.drag.dragging);
@@ -1124,6 +1135,13 @@ impl ArchExplorer {
         use egui::Key;
 
         ctx.input(|i| {
+            // Escape: Sürüklemeyi iptal et
+            if i.key_pressed(Key::Escape) && self.state.drag.dragging {
+                self.state.drag.cancel();
+                self.state.drag.last_drag_sources.clear();
+                self.state.drag.last_drag_time = None;
+            }
+
             // Back/Forward
             if i.key_pressed(Key::ArrowLeft) && i.modifiers.alt {
                 self.state.go_back();
@@ -1261,8 +1279,11 @@ impl ArchExplorer {
                     if !is_copy {
                         let _ = crate::backend::clipboard::clipboard_clear();
                     }
+                    self.state.notify.info(format!("{} öğe yapıştırılıyor…", cb.paths.len()));
                     self.state.start_transfer(cb.paths, target_dir, is_copy);
                     ctx.request_repaint();
+                } else {
+                    self.state.notify.warning("Panoda yapıştırılacak dosya yok".into());
                 }
             }
 
@@ -2098,8 +2119,10 @@ impl ArchExplorer {
 
         // ── End of frame drag cleanup ────────────────────────────────────
         // If mouse button was released anywhere and no drop handled it, cancel drag
-        if self.state.drag.dragging && ctx.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
+        if self.state.drag.dragging && ctx.input(|i| i.pointer.any_released() || !i.pointer.any_down() || !i.pointer.button_down(egui::PointerButton::Primary)) {
             self.state.drag.cancel();
+            self.state.drag.last_drag_sources.clear();
+            self.state.drag.last_drag_time = None;
         }
 
         // ── Session Auto-Save (Tabs & Split View Persistence) ────────────
@@ -2111,7 +2134,7 @@ impl ArchExplorer {
 // ── Pane helpers ──────────────────────────────────────────────────────────────
 
 fn pane_indicator(ui: &mut egui::Ui, t: &crate::theme::types::AexTheme, state: &AppState) {
-    use egui::{RichText, Color32, Layout, Align};
+    use egui::RichText;
     let c = &t.colors;
     ui.horizontal(|ui| {
         ui.add_space(4.0);

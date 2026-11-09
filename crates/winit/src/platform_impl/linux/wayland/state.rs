@@ -560,6 +560,7 @@ impl DataSourceHandler for WinitState {
         source: &WlDataSource,
     ) {
         self.outgoing_drag_sources.retain(|item| item.0.inner() != source);
+        self.notify_drag_ended();
     }
 
     fn dnd_dropped(
@@ -567,7 +568,9 @@ impl DataSourceHandler for WinitState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _source: &WlDataSource,
-    ) {}
+    ) {
+        self.notify_drag_ended();
+    }
 
     fn dnd_finished(
         &mut self,
@@ -576,6 +579,7 @@ impl DataSourceHandler for WinitState {
         source: &WlDataSource,
     ) {
         self.outgoing_drag_sources.retain(|item| item.0.inner() != source);
+        self.notify_drag_ended();
     }
 
     fn action(
@@ -588,6 +592,28 @@ impl DataSourceHandler for WinitState {
 }
 
 impl WinitState {
+    pub fn notify_drag_ended(&mut self) {
+        let device_id = crate::event::DeviceId::dummy();
+        let windows: Vec<WindowId> = self.windows.borrow().keys().copied().collect();
+        for wid in windows {
+            self.events_sink.push_window_event(
+                crate::event::WindowEvent::MouseInput {
+                    device_id,
+                    state: crate::event::ElementState::Released,
+                    button: crate::event::MouseButton::Left,
+                },
+                wid,
+            );
+            self.events_sink.push_window_event(
+                crate::event::WindowEvent::HoveredFileCancelled,
+                wid,
+            );
+        }
+        if let Some(ref aw) = self.awakener {
+            aw.ping();
+        }
+    }
+
     pub fn process_outgoing_drag_requests(&mut self) {
         let req = match OUTGOING_DRAG_REQUEST.lock().unwrap().take() {
             Some(r) => r,
