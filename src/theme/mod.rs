@@ -369,6 +369,49 @@ pub fn save_dir_view_mode(dir_path: &str, mode: &str) {
     }
 }
 
+pub fn load_dir_view_scales() -> std::collections::HashMap<String, f32> {
+    let content = fs::read_to_string(settings_path()).ok().unwrap_or_default();
+    let table: toml::Table = toml::from_str(&content).ok().unwrap_or_default();
+    let mut map = std::collections::HashMap::new();
+    if let Some(tbl) = table.get("dir_view_scales").and_then(|v| v.as_table()) {
+        for (k, v) in tbl {
+            if let Some(f) = v.as_float() {
+                map.insert(k.clone(), f as f32);
+            } else if let Some(i) = v.as_integer() {
+                map.insert(k.clone(), i as f32);
+            }
+        }
+    }
+    map
+}
+
+pub fn save_dir_view_scale(dir_path: &str, scale: f32) {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    let mut table: toml::Table = fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| toml::from_str(&c).ok())
+        .unwrap_or_default();
+
+    let clean = dir_path.trim_end_matches('/');
+    let key = if clean.is_empty() { "/" } else { clean };
+
+    let mut scales_table = table.get("dir_view_scales")
+        .and_then(|v| v.as_table())
+        .cloned()
+        .unwrap_or_default();
+
+    scales_table.insert(key.to_string(), toml::Value::Float(scale as f64));
+    table.insert("dir_view_scales".to_string(), toml::Value::Table(scales_table));
+
+    if let Ok(serialized) = toml::to_string_pretty(&table) {
+        fs::write(&path, serialized).ok();
+    }
+}
+
 pub fn load_saved_media_grid_style() -> Option<crate::state::MediaGridStyle> {
     let content = fs::read_to_string(settings_path()).ok()?;
     let table: toml::Table = toml::from_str(&content).ok()?;

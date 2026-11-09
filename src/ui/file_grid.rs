@@ -834,10 +834,18 @@ fn grid_item(
     let label_top_y = rect.min.y + icon_area_h + 3.0;
     let label_avail_h = (rect.max.y - 3.0 - label_top_y).max(18.0);
 
-    let display_name = truncate_to_width(ui, &entry.name, &name_font_id, max_text_w);
-    let name_galley = ui.painter().layout_no_wrap(display_name.clone(), name_font_id.clone(), Color32::WHITE);
-    let name_text_w = (name_galley.size().x + 8.0).clamp(24.0, max_text_w);
-    let name_pill_h = (name_font + 6.0).min(label_avail_h * 0.42);
+    // Multi-line filename wrapping (Nemo style satır başı)
+    let chars_per_line = ((max_text_w) / (name_font * 0.52)).max(8.0) as usize;
+    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 2);
+    let line_spacing = name_font * 1.20;
+
+    let text_w = name_lines.iter().map(|line| {
+        let truncated = truncate_to_width(ui, line, &name_font_id, max_text_w);
+        let galley = ui.painter().layout_no_wrap(truncated, name_font_id.clone(), Color32::WHITE);
+        galley.size().x
+    }).fold(0.0_f32, f32::max);
+    let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
+    let name_pill_h = (name_lines.len() as f32 * line_spacing + 4.0).min(label_avail_h - 2.0);
 
     let y_name = label_top_y + name_pill_h / 2.0;
     let label_pill_rect = Rect::from_center_size(
@@ -1021,13 +1029,18 @@ fn grid_item(
                 )
             };
 
-            painter.text(
-                Pos2::new(rect.center().x, y_name),
-                Align2::CENTER_CENTER,
-                display_name,
-                name_font_id.clone(),
-                text_color,
-            );
+            let start_y = y_name - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
+            for (li, line) in name_lines.iter().enumerate() {
+                let ly = start_y + li as f32 * line_spacing;
+                let truncated = truncate_to_width(ui, line, &name_font_id, max_text_w);
+                painter.text(
+                    Pos2::new(rect.center().x, ly),
+                    Align2::CENTER_CENTER,
+                    truncated,
+                    name_font_id.clone(),
+                    text_color,
+                );
+            }
         }
 
         // Lines 2 & 3: Nemo-style size and type labels (reference screenshot matching)
@@ -2235,7 +2248,8 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
                             // Media thumbnail in compact view if available
                             let ext = entry.extension.to_lowercase();
                             let is_media = !entry.is_dir && matches!(ext.as_str(),
-                                "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg");
+                                "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg"|"tiff"|"avif"
+                                |"mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts");
                             let mut drew_thumb = false;
                             if is_media {
                                 let th_id = egui::Id::new(format!("thumb_{}_lo", entry.path));
@@ -2249,8 +2263,62 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
                                         ((icon_sz * aspect).max(1.0), icon_sz)
                                     };
                                     let tr = Rect::from_center_size(icon_rect.center(), Vec2::new(fit_w, fit_h));
+                                    painter.rect_filled(tr, Rounding::same(s.radius_sm), Color32::from_black_alpha(25));
                                     painter.image(h.id(), tr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                                    painter.rect_stroke(tr, Rounding::same(s.radius_sm), Stroke::new(1.0_f32, Color32::from_white_alpha(30)));
                                     drew_thumb = true;
+                                } else {
+                                    // Asynchronously request low-quality thumbnail
+                                    use crate::backend::thumbnails::{get_thumbnail, jpeg_to_color_image, ThumbQuality};
+                                    let req = egui::Id::new(format!("lstreq_{}", entry.path));
+                                    let loading: bool = ui.ctx().data_mut(|d| d.get_temp(req).unwrap_or(false));
+                                    if !loading {
+                                        ui.ctx().data_mut(|d| d.insert_temp(req, true));
+                                        let p = entry.path.clone();
+                                        let ctx2 = ui.ctx().clone();
+                                        std::thread::spawn(move || {
+                                            if let Some(j) = get_thumbnail(&p, ThumbQuality::Low) {
+                                                if let Some(ci) = jpeg_to_color_image(&j) {
+                                                    ctx2.data_mut(|d| d.insert_temp(egui::Id::new(format!("lstraw_{}", p)), (ci, p.clone())));
+                                                    ctx2.request_repaint();
+                                                }
+                                            }
+                                        });
+                                    }
+                                    let raw: Option<(egui::ColorImage, String)> =
+                                        ui.ctx().data_mut(|d| d.get_temp(egui::Id::new(format!("lstraw_{}", entry.path))));
+                                    if let Some((ci, p)) = raw {
+                                        let h = ui.ctx().load_texture(format!("lthumb_{}", p), ci, egui::TextureOptions::LINEAR);
+                                        let tex_sz = h.size();
+                                        let aspect = if tex_sz[1] > 0 { tex_sz[0] as f32 / tex_sz[1] as f32 } else { 1.0 };
+                                        let (fit_w, fit_h) = if aspect >= 1.0 {
+                                            (icon_sz, (icon_sz / aspect).max(1.0))
+                                        } else {
+                                            ((icon_sz * aspect).max(1.0), icon_sz)
+                                        };
+                                        let tr = Rect::from_center_size(icon_rect.center(), Vec2::new(fit_w, fit_h));
+                                        painter.rect_filled(tr, Rounding::same(s.radius_sm), Color32::from_black_alpha(25));
+                                        painter.image(h.id(), tr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                                        painter.rect_stroke(tr, Rounding::same(s.radius_sm), Stroke::new(1.0_f32, Color32::from_white_alpha(30)));
+                                        drew_thumb = true;
+
+                                        ui.ctx().data_mut(|d| {
+                                            let th_key = format!("thumb_{}_lo", p);
+                                            d.insert_temp(egui::Id::new(&th_key), h);
+                                            d.remove::<(egui::ColorImage, String)>(egui::Id::new(format!("lstraw_{}", p)));
+
+                                            let lru_id = egui::Id::new("list_thumb_lru_keys");
+                                            let mut lru: std::collections::VecDeque<String> = d.get_temp(lru_id).unwrap_or_default();
+                                            lru.push_back(th_key);
+                                            while lru.len() > 300 {
+                                                if let Some(old_key) = lru.pop_front() {
+                                                    d.remove::<egui::TextureHandle>(egui::Id::new(&old_key));
+                                                }
+                                            }
+                                            d.insert_temp(lru_id, lru);
+                                        });
+                                        ui.ctx().request_repaint();
+                                    }
                                 }
                             }
                             if !drew_thumb {
@@ -3698,6 +3766,64 @@ mod tests {
         assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
         state.set_media_grid_style(MediaGridStyle::NemoGrid);
         assert_eq!(state.media_grid_style, MediaGridStyle::NemoGrid);
+    }
+
+    #[test]
+    fn test_compact_view_media_extensions() {
+        let is_compact_media = |ext: &str| -> bool {
+            matches!(ext,
+                "png"|"jpg"|"jpeg"|"webp"|"bmp"|"gif"|"ico"|"svg"|"tiff"|"avif"
+                |"mp4"|"mkv"|"avi"|"mov"|"webm"|"flv"|"wmv"|"m4v"|"ts")
+        };
+
+        // All supported image formats
+        for ext in &["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico", "svg", "tiff", "avif"] {
+            assert!(is_compact_media(ext), "Expected image extension {} to match", ext);
+        }
+
+        // All supported video formats
+        for ext in &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "ts"] {
+            assert!(is_compact_media(ext), "Expected video extension {} to match", ext);
+        }
+
+        // Non-media formats should not match
+        for ext in &["txt", "pdf", "rs", "zip", "exe", "iso"] {
+            assert!(!is_compact_media(ext), "Non-media extension {} should not match", ext);
+        }
+    }
+
+    #[test]
+    fn test_grid_item_multiline_wrapping_and_pill_geometry() {
+        let name_font = 10.0_f32;
+        let line_spacing = name_font * 1.20; // 12.0
+        let max_text_w = 100.0_f32;
+
+        let chars_per_line = ((max_text_w) / (name_font * 0.52)).max(8.0) as usize;
+        assert_eq!(chars_per_line, 19);
+
+        // Single line file
+        let single_lines = wrap_name_multiline("short.txt", chars_per_line, 2);
+        assert_eq!(single_lines.len(), 1);
+        let single_pill_h = single_lines.len() as f32 * line_spacing + 4.0;
+        assert_eq!(single_pill_h, 16.0);
+
+        // Multi-line file
+        let multi_lines = wrap_name_multiline("long_filename_that_definitely_wraps_across_lines.pdf", chars_per_line, 2);
+        assert_eq!(multi_lines.len(), 2);
+        let multi_pill_h = multi_lines.len() as f32 * line_spacing + 4.0;
+        assert_eq!(multi_pill_h, 28.0);
+        assert!(multi_pill_h > single_pill_h);
+
+        // Centering math: start_y offset from y_name
+        let y_name = 80.0_f32;
+        let start_y_single = y_name - ((single_lines.len() - 1) as f32 * line_spacing) / 2.0;
+        assert_eq!(start_y_single, 80.0); // Exact center for 1 line
+
+        let start_y_multi = y_name - ((multi_lines.len() - 1) as f32 * line_spacing) / 2.0;
+        assert_eq!(start_y_multi, 74.0); // -6.0 for line 0
+        let line_1_y = start_y_multi + 1.0 * line_spacing;
+        assert_eq!(line_1_y, 86.0); // +6.0 for line 1
+        assert_eq!((start_y_multi + line_1_y) / 2.0, y_name); // Symmetrically centered!
     }
 }
 

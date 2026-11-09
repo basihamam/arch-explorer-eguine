@@ -1411,6 +1411,7 @@ pub struct AppState {
     pub always_root: bool,
     pub is_root_active: bool,
     pub dir_view_modes: std::collections::HashMap<String, String>,
+    pub dir_view_scales: std::collections::HashMap<String, f32>,
     pub list_columns: ListViewColumns,
     pub perf_settings: PerfSettings,
     pub pending_transfer: Option<TransferRequest>,
@@ -1550,10 +1551,14 @@ impl AppState {
             always_root:              load_root_settings().always_root,
             is_root_active:           false,
             dir_view_modes:           crate::theme::load_dir_view_modes(),
+            dir_view_scales:          crate::theme::load_dir_view_scales(),
             list_columns:             load_list_columns(),
             perf_settings:            load_perf_settings(),
             pending_transfer:         None,
         };
+
+        let init_path = app_state.nav.current_path.clone();
+        app_state.apply_dir_view_settings(&init_path);
 
         if let Some(sess) = session {
             if sess.dual_pane {
@@ -1639,11 +1644,39 @@ impl AppState {
         self.terminal.cwd = dir;
     }
 
+    pub fn apply_dir_view_settings(&mut self, path: &str) {
+        let path_clean = path.trim_end_matches('/');
+        let key = if path_clean.is_empty() { "/" } else { path_clean };
+
+        if let Some(saved_mode) = self.dir_view_modes.get(key) {
+            let mode = match saved_mode.as_str() {
+                "list" => ViewMode::List,
+                "grid" => ViewMode::Grid,
+                "compact" => ViewMode::Compact,
+                _ => ViewMode::Grid,
+            };
+            self.view_mode = mode.clone();
+            self.tabs.active_mut().view_mode = Some(mode);
+        } else {
+            self.tabs.active_mut().view_mode = None;
+        }
+
+        if let Some(&saved_scale) = self.dir_view_scales.get(key) {
+            self.view_scale = saved_scale;
+            self.tabs.active_mut().view_scale = Some(saved_scale);
+        } else {
+            let default_scale = crate::theme::load_saved_view_scale().unwrap_or(1.0);
+            self.view_scale = default_scale;
+            self.tabs.active_mut().view_scale = None;
+        }
+    }
+
     pub fn navigate(&mut self, path: String) {
         self.nav.push(path.clone());
         // Aktif tab'ın görünen path/label'ını güncelle
-        self.tabs.active_mut().path = path;
+        self.tabs.active_mut().path = path.clone();
         self.tabs.active_mut().update_label();
+        self.apply_dir_view_settings(&path);
         self.selection.clear();
         self.search.clear();
         self.panels.close_context_menu();
@@ -1674,6 +1707,8 @@ impl AppState {
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
             tab.view_mode   = Some(self.view_mode.clone());
+            tab.view_scale  = Some(self.view_scale);
+            tab.media_grid_style = Some(self.media_grid_style);
             tab.sort_by     = Some(self.dir.sort_by);
             tab.sort_asc    = Some(self.dir.sort_asc);
             tab.update_label();
@@ -1704,19 +1739,30 @@ impl AppState {
                 self.dir.sort_asc = true;
             }
 
+            let path_clean = tab.path.trim_end_matches('/');
+            let key = if path_clean.is_empty() { "/" } else { path_clean };
+
             if let Some(ref vm) = tab.view_mode {
                 self.view_mode = vm.clone();
-            } else {
-                let path_clean = tab.path.trim_end_matches('/');
-                let key = if path_clean.is_empty() { "/" } else { path_clean };
-                if let Some(saved_mode) = self.dir_view_modes.get(key) {
-                    match saved_mode.as_str() {
-                        "list" => self.view_mode = ViewMode::List,
-                        "grid" => self.view_mode = ViewMode::Grid,
-                        "compact" => self.view_mode = ViewMode::Compact,
-                        _ => {}
-                    }
+            } else if let Some(saved_mode) = self.dir_view_modes.get(key) {
+                match saved_mode.as_str() {
+                    "list" => self.view_mode = ViewMode::List,
+                    "grid" => self.view_mode = ViewMode::Grid,
+                    "compact" => self.view_mode = ViewMode::Compact,
+                    _ => {}
                 }
+            }
+
+            if let Some(vs) = tab.view_scale {
+                self.view_scale = vs;
+            } else if let Some(&saved_scale) = self.dir_view_scales.get(key) {
+                self.view_scale = saved_scale;
+            } else {
+                self.view_scale = crate::theme::load_saved_view_scale().unwrap_or(1.0);
+            }
+
+            if let Some(mgs) = tab.media_grid_style {
+                self.media_grid_style = mgs;
             }
 
             if let Some(ref cached) = tab.entries {
@@ -1743,6 +1789,8 @@ impl AppState {
             tab.search_query = self.search.query.clone();
             tab.entries     = Some(self.dir.entries.clone());
             tab.view_mode   = Some(self.view_mode.clone());
+            tab.view_scale  = Some(self.view_scale);
+            tab.media_grid_style = Some(self.media_grid_style);
             tab.sort_by     = Some(self.dir.sort_by);
             tab.sort_asc    = Some(self.dir.sort_asc);
             tab.update_label();
@@ -1764,18 +1812,12 @@ impl AppState {
             self.search.active    = !tab.search_query.is_empty();
             self.dir.sort_by      = SortBy::Name;
             self.dir.sort_asc     = true;
-
-            let path_clean = tab.path.trim_end_matches('/');
-            let key = if path_clean.is_empty() { "/" } else { path_clean };
-            if let Some(saved_mode) = self.dir_view_modes.get(key) {
-                match saved_mode.as_str() {
-                    "list" => self.view_mode = ViewMode::List,
-                    "grid" => self.view_mode = ViewMode::Grid,
-                    "compact" => self.view_mode = ViewMode::Compact,
-                    _ => {}
-                }
-            }
         }
+
+        self.apply_dir_view_settings(&path);
+        self.tabs.active_mut().view_mode = Some(self.view_mode.clone());
+        self.tabs.active_mut().view_scale = Some(self.view_scale);
+        self.tabs.active_mut().media_grid_style = Some(self.media_grid_style);
 
         self.needs_reload = true;
         self.sync_terminal_cwd();
@@ -1787,14 +1829,68 @@ impl AppState {
         self.tabs.close_tab(idx);
         let path = self.tabs.active().path.clone();
         self.nav.current_path = path;
+
+        {
+            let tab = self.tabs.active();
+            self.nav.history      = tab.history.clone();
+            self.nav.history_idx  = tab.history_idx;
+            self.selection.selected = tab.selection.clone();
+            self.search.query     = tab.search_query.clone();
+            self.search.active    = !tab.search_query.is_empty();
+
+            if let Some(sb) = tab.sort_by {
+                self.dir.sort_by = sb;
+            } else {
+                self.dir.sort_by = SortBy::Name;
+            }
+            if let Some(sa) = tab.sort_asc {
+                self.dir.sort_asc = sa;
+            } else {
+                self.dir.sort_asc = true;
+            }
+
+            let path_clean = tab.path.trim_end_matches('/');
+            let key = if path_clean.is_empty() { "/" } else { path_clean };
+
+            if let Some(ref vm) = tab.view_mode {
+                self.view_mode = vm.clone();
+            } else if let Some(saved_mode) = self.dir_view_modes.get(key) {
+                match saved_mode.as_str() {
+                    "list" => self.view_mode = ViewMode::List,
+                    "grid" => self.view_mode = ViewMode::Grid,
+                    "compact" => self.view_mode = ViewMode::Compact,
+                    _ => {}
+                }
+            }
+
+            if let Some(vs) = tab.view_scale {
+                self.view_scale = vs;
+            } else if let Some(&saved_scale) = self.dir_view_scales.get(key) {
+                self.view_scale = saved_scale;
+            } else {
+                self.view_scale = crate::theme::load_saved_view_scale().unwrap_or(1.0);
+            }
+
+            if let Some(mgs) = tab.media_grid_style {
+                self.media_grid_style = mgs;
+            }
+
+            if let Some(ref cached) = tab.entries {
+                self.dir.entries = cached.clone();
+                self.dir.is_loading = false;
+            }
+        }
+
         self.needs_reload = true;
         self.sync_terminal_cwd();
     }
 
     pub fn go_back(&mut self) {
         if self.nav.go_back().is_some() {
-            self.tabs.active_mut().path = self.nav.current_path.clone();
+            let path = self.nav.current_path.clone();
+            self.tabs.active_mut().path = path.clone();
             self.tabs.active_mut().update_label();
+            self.apply_dir_view_settings(&path);
             self.selection.clear();
             self.search.clear();
             if self.panels.active == ActivePanel::DevicesView {
@@ -1807,8 +1903,10 @@ impl AppState {
 
     pub fn go_forward(&mut self) {
         if self.nav.go_forward().is_some() {
-            self.tabs.active_mut().path = self.nav.current_path.clone();
+            let path = self.nav.current_path.clone();
+            self.tabs.active_mut().path = path.clone();
             self.tabs.active_mut().update_label();
+            self.apply_dir_view_settings(&path);
             self.selection.clear();
             self.search.clear();
             if self.panels.active == ActivePanel::DevicesView {
@@ -1821,8 +1919,10 @@ impl AppState {
 
     pub fn go_up(&mut self) {
         if self.nav.go_up().is_some() {
-            self.tabs.active_mut().path = self.nav.current_path.clone();
+            let path = self.nav.current_path.clone();
+            self.tabs.active_mut().path = path.clone();
             self.tabs.active_mut().update_label();
+            self.apply_dir_view_settings(&path);
             self.selection.clear();
             self.search.clear();
             if self.panels.active == ActivePanel::DevicesView {
@@ -1861,6 +1961,12 @@ impl AppState {
                     self.view_mode = ViewMode::Grid;
                 }
             }
+            self.tabs.active_mut().view_mode = Some(self.view_mode.clone());
+
+            if let Some(&scale) = self.dir_view_scales.get(key) {
+                self.view_scale = scale;
+                self.tabs.active_mut().view_scale = Some(scale);
+            }
 
             self.dir.load_listing(listing);
 
@@ -1883,6 +1989,7 @@ impl AppState {
 
     pub fn set_view_mode_for_current_dir(&mut self, mode: ViewMode) {
         self.view_mode = mode.clone();
+        self.tabs.active_mut().view_mode = Some(mode.clone());
         let mode_str = match mode {
             ViewMode::List => "list",
             ViewMode::Grid => "grid",
@@ -1897,7 +2004,18 @@ impl AppState {
 
     pub fn set_media_grid_style(&mut self, style: MediaGridStyle) {
         self.media_grid_style = style;
+        self.tabs.active_mut().media_grid_style = Some(style);
         crate::theme::save_media_grid_style(style);
+    }
+
+    pub fn set_view_scale_for_current_dir(&mut self, scale: f32) {
+        let clamped = scale.clamp(0.4, 3.0);
+        self.view_scale = clamped;
+        self.tabs.active_mut().view_scale = Some(clamped);
+        let path_clean = self.nav.current_path.trim_end_matches('/');
+        let key = if path_clean.is_empty() { "/" } else { path_clean };
+        self.dir_view_scales.insert(key.to_string(), clamped);
+        crate::theme::save_dir_view_scale(key, clamped);
     }
 
     pub fn select_paths_and_queue(&mut self, paths: Vec<String>) {
@@ -2493,6 +2611,8 @@ pub struct TabEntry {
     pub view_mode:   Option<ViewMode>,
     pub sort_by:     Option<SortBy>,
     pub sort_asc:    Option<bool>,
+    pub view_scale:  Option<f32>,
+    pub media_grid_style: Option<MediaGridStyle>,
 }
 
 impl TabEntry {
@@ -2502,7 +2622,7 @@ impl TabEntry {
             .unwrap_or_else(|| path.clone());
         let mut history = VecDeque::new();
         history.push_back(path.clone());
-        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None, view_mode: None, sort_by: None, sort_asc: None }
+        Self { path: path.clone(), history, history_idx: 0, selection: HashSet::new(), search_query: String::new(), label, entries: None, view_mode: None, sort_by: None, sort_asc: None, view_scale: None, media_grid_style: None }
     }
 
     pub fn update_label(&mut self) {
@@ -2698,7 +2818,7 @@ impl AppState {
         self.drag          = snap.drag.clone();
         self.view_mode     = snap.view_mode.clone();
         self.media_grid_style = snap.media_grid_style;
-        // view_scale her iki panel arasında senkronize kalır, zıplama yapmaz
+        self.view_scale    = snap.view_scale;
         self.tabs          = snap.tabs.clone();
         self.needs_reload  = snap.needs_reload;
         self.panels.context_menu = snap.context_menu.clone();
@@ -2940,6 +3060,44 @@ mod tests {
         // Tab 0 should retain its Modified/Desc sort!
         assert_eq!(state.dir.sort_by, SortBy::Modified);
         assert!(!state.dir.sort_asc);
+    }
+
+    #[test]
+    fn test_tab_view_mode_and_scale_isolation() {
+        let mut state = AppState::new();
+        // Customize Tab 0
+        state.set_view_mode_for_current_dir(ViewMode::Compact);
+        state.set_view_scale_for_current_dir(1.8);
+        state.set_media_grid_style(MediaGridStyle::Masonry);
+
+        assert_eq!(state.view_mode, ViewMode::Compact);
+        assert!((state.view_scale - 1.8).abs() < 0.001);
+        assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
+
+        // Open Tab 1
+        state.open_in_new_tab("/tmp".into());
+        assert_eq!(state.tabs.active_idx, 1);
+        // Tab 1 should NOT inherit Tab 0's customized scale/mode if /tmp is default
+        assert_ne!(state.view_scale, 1.8);
+
+        // Customize Tab 1
+        state.set_view_mode_for_current_dir(ViewMode::List);
+        state.set_view_scale_for_current_dir(0.8);
+        assert_eq!(state.view_mode, ViewMode::List);
+        assert!((state.view_scale - 0.8).abs() < 0.001);
+
+        // Switch back to Tab 0
+        state.switch_tab(0);
+        assert_eq!(state.tabs.active_idx, 0);
+        assert_eq!(state.view_mode, ViewMode::Compact);
+        assert!((state.view_scale - 1.8).abs() < 0.001);
+        assert_eq!(state.media_grid_style, MediaGridStyle::Masonry);
+
+        // Switch to Tab 1
+        state.switch_tab(1);
+        assert_eq!(state.tabs.active_idx, 1);
+        assert_eq!(state.view_mode, ViewMode::List);
+        assert!((state.view_scale - 0.8).abs() < 0.001);
     }
 }
 

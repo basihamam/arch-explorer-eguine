@@ -980,7 +980,7 @@ impl eframe::App for ArchExplorer {
             }
         });
         if (self.state.view_scale - old_scale).abs() > 0.001 {
-            crate::theme::save_view_scale(self.state.view_scale);
+            self.state.set_view_scale_for_current_dir(self.state.view_scale);
         }
 
         // 3. Yeniden yükleme gerekiyor mu?
