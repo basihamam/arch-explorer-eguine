@@ -1086,7 +1086,10 @@ impl eframe::App for ArchExplorer {
         self.handle_shortcuts(ctx);
 
         // Sync global dragging flag into ctx data
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("is_file_dragging"), self.state.drag.dragging));
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("is_file_dragging"), self.state.drag.dragging);
+            d.insert_temp(egui::Id::new("drag_sources"), self.state.drag.sources.clone());
+        });
 
         // 7. UI render
         self.render_ui(ctx);
@@ -1423,7 +1426,11 @@ impl ArchExplorer {
 
         // ── Top TabBar (under titlebar, full window width) ───────────────
         // Tek sekme ve tek bölme durumunda kullanıcı isteğiyle gizlenir (özel tasarım tercihi)
-        let show_tab_bar = self.state.dual_pane || self.state.tabs.tabs.len() > 1;
+        // Ancak bir dosya/klasör sürüklenirken sekmelere veya yeni sekmeye bırakılabilmesi için gösterilir!
+        let show_tab_bar = self.state.dual_pane
+            || self.state.tabs.tabs.len() > 1
+            || self.state.drag.dragging
+            || !ctx.input(|i| i.raw.hovered_files.is_empty());
         if show_tab_bar {
             crate::ui::tab_bar::render_top_panel(ctx, t, &mut self.state);
         }
@@ -1858,6 +1865,152 @@ impl ArchExplorer {
                 self.state.notify.info(format!("{} dosya bırakıldı -> {}", paths.len(), target_dir));
                 self.state.start_transfer(paths, target_dir, true);
                 ctx.request_repaint();
+            }
+        }
+
+        // ── Floating Drag Ghost / Badge ──────────────────────────────────
+        if self.state.drag.dragging && !self.state.drag.sources.is_empty() && !ctx.input(|i| i.pointer.any_released()) {
+            let pointer_pos = ctx.pointer_interact_pos()
+                .or_else(|| ctx.pointer_latest_pos())
+                .or_else(|| ctx.pointer_hover_pos())
+                .or_else(|| ctx.input(|i| i.pointer.latest_pos()));
+
+            if let Some(pos) = pointer_pos {
+                let badge_pos = pos + egui::vec2(14.0, 14.0);
+                let first = &self.state.drag.sources[0];
+                let count = self.state.drag.sources.len();
+
+                let p = std::path::Path::new(first);
+                let is_dir = p.is_dir()
+                    || (first.starts_with("adb://") && (first.ends_with('/') || !first.split('/').last().unwrap_or("").contains('.')))
+                    || self.state.dir.entries.iter().find(|e| &e.path == first).map_or(false, |e| e.is_dir);
+
+                let name = if let Some(e) = self.state.dir.entries.iter().find(|e| &e.path == first) {
+                    e.name.clone()
+                } else {
+                    let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    if n.is_empty() { first.clone() } else { n }
+                };
+
+                let (icon_str, icon_color) = if is_dir {
+                    (crate::ui::icon(t, "folder"), egui::Color32::from_rgb(250, 200, 60))
+                } else {
+                    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+                    let entry = crate::backend::fs_ops::FileEntry {
+                        name: name.clone(),
+                        path: first.clone(),
+                        is_dir: false,
+                        is_symlink: p.is_symlink(),
+                        size: 0,
+                        modified: String::new(),
+                        created: String::new(),
+                        permissions: String::new(),
+                        mime_type: String::new(),
+                        extension: ext,
+                        hidden: false,
+                        is_executable: false,
+                    };
+                    (crate::ui::file_icon(t, &entry), crate::ui::icon_color_for_entry(t, &entry))
+                };
+
+                let truncated_name = if name.chars().count() > 24 {
+                    format!("{}…", name.chars().take(23).collect::<String>())
+                } else {
+                    name
+                };
+
+                let font_icon = egui::FontId::new(14.0, egui::FontFamily::Monospace);
+                let font_text = egui::FontId::new(12.0, egui::FontFamily::Proportional);
+                let font_pill = egui::FontId::new(10.0, egui::FontFamily::Proportional);
+
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag_ghost_badge")));
+
+                let icon_w = painter.layout_no_wrap(icon_str.to_string(), font_icon.clone(), icon_color).size().x;
+                let text_w = painter.layout_no_wrap(truncated_name.clone(), font_text.clone(), t.colors.text_primary()).size().x;
+
+                let pill_w = if count > 1 {
+                    let pill_str = format!("+{}", count - 1);
+                    painter.layout_no_wrap(pill_str, font_pill.clone(), egui::Color32::WHITE).size().x + 10.0
+                } else {
+                    0.0
+                };
+
+                let total_w = (icon_w + 8.0 + text_w + if count > 1 { 8.0 + pill_w } else { 0.0 } + 20.0).clamp(60.0, 360.0);
+                let total_h = 30.0_f32;
+
+                let screen = ctx.screen_rect();
+                let mut badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(total_w, total_h));
+
+                if badge_rect.max.x > screen.max.x - 8.0 {
+                    badge_rect = badge_rect.translate(egui::vec2(-(total_w + 24.0), 0.0));
+                }
+                if badge_rect.max.y > screen.max.y - 8.0 {
+                    badge_rect = badge_rect.translate(egui::vec2(0.0, -(total_h + 24.0)));
+                }
+
+                // Shadow
+                painter.rect_filled(
+                    badge_rect.translate(egui::vec2(2.0, 3.0)),
+                    egui::Rounding::same(7.0),
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
+                );
+
+                // Background: semi-transparent dark crust
+                let bg_color = egui::Color32::from_rgba_unmultiplied(
+                    t.colors.bg_crust().r(),
+                    t.colors.bg_crust().g(),
+                    t.colors.bg_crust().b(),
+                    235,
+                );
+                painter.rect_filled(badge_rect, egui::Rounding::same(6.0), bg_color);
+
+                // Border: Theme accent
+                painter.rect_stroke(
+                    badge_rect,
+                    egui::Rounding::same(6.0),
+                    egui::Stroke::new(1.2_f32, t.colors.accent()),
+                );
+
+                // Icon
+                let icon_pos = egui::pos2(badge_rect.left() + 10.0, badge_rect.center().y);
+                painter.text(
+                    icon_pos,
+                    egui::Align2::LEFT_CENTER,
+                    icon_str,
+                    font_icon,
+                    icon_color,
+                );
+
+                // Text
+                let text_pos = egui::pos2(badge_rect.left() + 10.0 + icon_w + 8.0, badge_rect.center().y);
+                painter.text(
+                    text_pos,
+                    egui::Align2::LEFT_CENTER,
+                    &truncated_name,
+                    font_text,
+                    t.colors.text_primary(),
+                );
+
+                // Multi-item pill (+N)
+                if count > 1 {
+                    let pill_str = format!("+{}", count - 1);
+                    let pill_rect = egui::Rect::from_min_size(
+                        egui::pos2(badge_rect.left() + 10.0 + icon_w + 8.0 + text_w + 6.0, badge_rect.center().y - 8.0),
+                        egui::vec2(pill_w, 16.0),
+                    );
+                    painter.rect_filled(
+                        pill_rect,
+                        egui::Rounding::same(8.0),
+                        t.colors.accent(),
+                    );
+                    painter.text(
+                        pill_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        pill_str,
+                        font_pill,
+                        egui::Color32::WHITE,
+                    );
+                }
             }
         }
 

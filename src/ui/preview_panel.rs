@@ -1083,6 +1083,18 @@ fn render_video_sorcerer(
     let sp = &t.spacing;
     let s  = &t.shape;
 
+    let total_dur = parse_duration_seconds(preview.media_info.as_ref());
+    if total_dur > 0.0 {
+        state.media_player.total_duration = total_dur;
+    } else if state.media_player.current_path.as_deref() != Some(path) {
+        state.media_player.total_duration = 0.0;
+    }
+    let effective_total_dur = if total_dur > 0.0 {
+        total_dur
+    } else {
+        state.media_player.total_duration
+    };
+
     let avail_w = ui.available_width().max(160.0);
     let card_h = (avail_w * 0.5625).clamp(140.0, 520.0);
     let (card_rect, card_resp) = ui.allocate_exact_size(Vec2::new(avail_w, card_h), Sense::click());
@@ -1193,7 +1205,7 @@ fn render_video_sorcerer(
         );
 
         if card_resp.clicked() {
-            state.media_player.play(path.to_string(), true);
+            state.media_player.play_at(path.to_string(), true, 0.0, effective_total_dur);
         }
     }
 
@@ -1231,7 +1243,7 @@ fn render_video_sorcerer(
     let fs_rect = Rect::from_min_size(pos2(card_rect.max.x - 8.0 - fs_w, card_rect.min.y + 8.0), Vec2::new(fs_w, 26.0));
     if ui.put(fs_rect, fs_btn).on_hover_text("Tam Ekran").clicked() {
         if !is_playing {
-            state.media_player.play(path.to_string(), true);
+            state.media_player.play_at(path.to_string(), true, 0.0, effective_total_dur);
         }
         state.is_video_fullscreen = true;
     }
@@ -1291,16 +1303,6 @@ fn render_video_sorcerer(
     ui.add_space(sp.xs);
 
     // ── Video Timeline Bar & Media Controls ──────────────────────────────────────
-    let total_dur = parse_duration_seconds(preview.media_info.as_ref());
-    if total_dur > 0.0 && state.media_player.total_duration == 0.0 {
-        state.media_player.total_duration = total_dur;
-    }
-    let effective_total_dur = if state.media_player.total_duration > 0.0 {
-        state.media_player.total_duration
-    } else {
-        total_dur
-    };
-
     let elapsed = state.media_player.elapsed_secs();
     let remaining = (effective_total_dur - elapsed).max(0.0);
 
@@ -1467,13 +1469,15 @@ fn render_audio_sorcerer(
     let s  = &t.shape;
 
     let total_dur = parse_duration_seconds(preview.media_info.as_ref());
-    if total_dur > 0.0 && state.media_player.total_duration == 0.0 {
+    if total_dur > 0.0 {
         state.media_player.total_duration = total_dur;
+    } else if state.media_player.current_path.as_deref() != Some(path) {
+        state.media_player.total_duration = 0.0;
     }
-    let effective_total_dur = if state.media_player.total_duration > 0.0 {
-        state.media_player.total_duration
-    } else {
+    let effective_total_dur = if total_dur > 0.0 {
         total_dur
+    } else {
+        state.media_player.total_duration
     };
 
     let elapsed = state.media_player.elapsed_secs();
@@ -2080,6 +2084,115 @@ mod tests {
                 render_video_sorcerer(ui, &theme, &dummy_preview, "/test/video.mp4", &mut state, false);
                 let after_y = ui.cursor().top();
                 assert!(after_y - before_y >= 250.0, "Cursor must advance below video card and summary table: before={}, after={}, diff={}", before_y, after_y, after_y - before_y);
+            });
+        });
+    }
+
+    #[test]
+    fn test_video_preview_duration_update_and_sync() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut state = AppState::new();
+                let theme = AexTheme::default();
+
+                // 1. First video has 7 seconds duration
+                let preview_7s = FilePreview {
+                    kind: "video".into(),
+                    mime_type: "video/mp4".into(),
+                    size: 5_000_000,
+                    image_b64: None,
+                    image_rgba: None,
+                    text_content: None,
+                    media_info: Some(serde_json::json!({
+                        "Duration": "00:07",
+                    })),
+                    line_count: None,
+                    is_truncated: false,
+                    language: None,
+                    dir_entries: None,
+                };
+                render_video_sorcerer(ui, &theme, &preview_7s, "/test/video_7s.mp4", &mut state, false);
+                assert_eq!(state.media_player.total_duration, 7.0, "First video total duration must be 7.0");
+
+                // 2. Second video has 36 seconds duration (user switching to new video)
+                let preview_36s = FilePreview {
+                    kind: "video".into(),
+                    mime_type: "video/mp4".into(),
+                    size: 25_000_000,
+                    image_b64: None,
+                    image_rgba: None,
+                    text_content: None,
+                    media_info: Some(serde_json::json!({
+                        "Duration": "00:36",
+                    })),
+                    line_count: None,
+                    is_truncated: false,
+                    language: None,
+                    dir_entries: None,
+                };
+                render_video_sorcerer(ui, &theme, &preview_36s, "/test/video_36s.mp4", &mut state, false);
+                assert_eq!(
+                    state.media_player.total_duration, 36.0,
+                    "New video duration must update to 36.0 and not stay stuck at 7.0!"
+                );
+
+                // 3. Stop should reset to 0.0
+                state.media_player.stop();
+                assert_eq!(state.media_player.total_duration, 0.0);
+            });
+        });
+    }
+
+    #[test]
+    fn test_audio_preview_duration_update_and_sync() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut state = AppState::new();
+                let theme = AexTheme::default();
+
+                // 1. First audio has 3:00 (180s)
+                let preview_song1 = FilePreview {
+                    kind: "audio".into(),
+                    mime_type: "audio/mp3".into(),
+                    size: 4_000_000,
+                    image_b64: None,
+                    image_rgba: None,
+                    text_content: None,
+                    media_info: Some(serde_json::json!({
+                        "Duration": "03:00",
+                    })),
+                    line_count: None,
+                    is_truncated: false,
+                    language: None,
+                    dir_entries: None,
+                };
+                render_audio_sorcerer(ui, &theme, &preview_song1, "/test/song1.mp3", &mut state, false);
+                assert_eq!(state.media_player.total_duration, 180.0);
+
+                // 2. Second audio has 0:45 (45s)
+                let preview_song2 = FilePreview {
+                    kind: "audio".into(),
+                    mime_type: "audio/mp3".into(),
+                    size: 1_000_000,
+                    image_b64: None,
+                    image_rgba: None,
+                    text_content: None,
+                    media_info: Some(serde_json::json!({
+                        "Duration": "00:45",
+                    })),
+                    line_count: None,
+                    is_truncated: false,
+                    language: None,
+                    dir_entries: None,
+                };
+                render_audio_sorcerer(ui, &theme, &preview_song2, "/test/song2.mp3", &mut state, false);
+                assert_eq!(state.media_player.total_duration, 45.0, "New audio duration must update to 45.0!");
+
+                // 3. Stop resets
+                state.media_player.stop();
+                assert_eq!(state.media_player.total_duration, 0.0);
             });
         });
     }

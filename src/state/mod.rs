@@ -1153,6 +1153,7 @@ impl MediaPlayerState {
         self.start_instant = None;
         self.seek_offset = 0.0;
         self.paused_elapsed = 0.0;
+        self.total_duration = 0.0;
     }
 
     pub fn play(&mut self, path: String, is_video: bool) {
@@ -1165,9 +1166,7 @@ impl MediaPlayerState {
         self.current_path = Some(path.clone());
         self.is_video = is_video;
         self.seek_offset = start_secs.max(0.0);
-        if duration > 0.0 {
-            self.total_duration = duration;
-        }
+        self.total_duration = duration;
 
         let start_str = format!("{:.2}", self.seek_offset);
 
@@ -2153,7 +2152,11 @@ impl AppState {
             std::path::Path::new(&target_path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str(),
             "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac"
         );
-        self.media_player.play(target_path.clone(), is_video);
+        let cached_dur = self.preview_cache.get(&target_path)
+            .and_then(|r| r.as_ref().ok())
+            .map(|p| crate::ui::preview_panel::parse_duration_seconds(p.media_info.as_ref()))
+            .unwrap_or(0.0);
+        self.media_player.play_at(target_path.clone(), is_video, 0.0, cached_dur);
         Some(target_path)
     }
 
@@ -2930,6 +2933,39 @@ mod tests {
         assert!(mp.is_playing());
         mp.stop();
         assert!(!mp.is_playing());
+    }
+
+    #[test]
+    fn test_media_player_duration_management() {
+        let mut mp = MediaPlayerState::new();
+        assert_eq!(mp.total_duration, 0.0);
+
+        // 1. Play first video with 7.0s duration
+        mp.play_at("/tmp/video_7s.mp4".to_string(), true, 0.0, 7.0);
+        assert_eq!(mp.total_duration, 7.0);
+        assert_eq!(mp.current_path.as_deref(), Some("/tmp/video_7s.mp4"));
+
+        // 2. Stop playback - total_duration must reset to 0.0
+        mp.stop();
+        assert_eq!(mp.total_duration, 0.0);
+        assert_eq!(mp.current_path, None);
+
+        // 3. Play second video with 36.0s duration
+        mp.play_at("/tmp/video_36s.mp4".to_string(), true, 0.0, 36.0);
+        assert_eq!(mp.total_duration, 36.0, "total_duration must update to 36.0, not remain 7.0");
+        assert_eq!(mp.current_path.as_deref(), Some("/tmp/video_36s.mp4"));
+
+        // 4. Seeking must preserve duration
+        mp.seek_to(10.0);
+        assert_eq!(mp.total_duration, 36.0);
+
+        // 5. Sequential play without stop must overwrite duration cleanly
+        mp.play_at("/tmp/video_120s.mp4".to_string(), true, 0.0, 120.0);
+        assert_eq!(mp.total_duration, 120.0);
+
+        // 6. Stop resets to 0.0
+        mp.stop();
+        assert_eq!(mp.total_duration, 0.0);
     }
 
     #[test]

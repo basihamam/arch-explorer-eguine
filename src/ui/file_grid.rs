@@ -353,12 +353,14 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         col_ui.spacing_mut().item_spacing = Vec2::new(0.0, gap);
                         for &idx in &col_assignments[c] {
                             let entry = &entries[idx];
-                            let item_hit = masonry_grid_item(col_ui, t, state, entry, entries, col_w, thumb_q, idx);
+                            let has_item_below = col_assignments[c].last() != Some(&idx);
+                            let item_hit = masonry_grid_item(col_ui, t, state, entry, entries, col_w, thumb_q, idx, has_item_below);
                             current_frame_rects.push(item_hit);
                             rendered_entries.push(entry.clone());
                         }
                     }
                 });
+                ui.add_space(60.0);
             } else {
                 let total_rows = (total_count + cols - 1) / cols;
                 let item_w = item_size;
@@ -385,11 +387,12 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     let row_start = row_idx * cols;
                     let row_end = (row_start + cols).min(total_count);
 
-                    ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
                         for idx in row_start..row_end {
                             let entry = &entries[idx];
-                            let item_hit = grid_item(ui, t, state, entry, entries, item_w, item_h, thumb_q, idx);
+                            let has_item_below = (idx + cols) < total_count;
+                            let item_hit = grid_item(ui, t, state, entry, entries, item_w, item_h, thumb_q, idx, has_item_below);
                             current_frame_rects.push(item_hit);
                             rendered_entries.push(entry.clone());
                         }
@@ -401,6 +404,7 @@ fn grid_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                 if bottom_spacer > 0.0 {
                     ui.add_space(bottom_spacer);
                 }
+                ui.add_space(60.0);
             }
 
             // Update rubber band selection using stored item rects
@@ -507,6 +511,7 @@ fn masonry_grid_item(
     item_w: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
+    has_item_below: bool,
 ) -> GridHitArea {
     let c = &t.colors;
     let s = &t.shape;
@@ -533,13 +538,19 @@ fn masonry_grid_item(
 
     let name_font  = (item_w * 0.102).clamp(9.5, 12.5);
     let badge_font = (item_w * 0.080).clamp(8.0, 10.5);
+    let font_id = FontId::new(name_font, FontFamily::Proportional);
+    let max_text_w = (item_w - 8.0).max(10.0);
 
-    let chars_per_line = ((item_w - 8.0) / (name_font * 0.52)).max(8.0) as usize;
-    // Max 2 lines of filename wrapping so card height remains crisp and clamped
-    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 2);
+    // Eğer altta item yoksa max 20 satır, aksi halde 2 satır
+    let max_lines = if has_item_below { 2 } else { 20 };
+    let name_lines = wrap_name_multiline_measured(ui, &entry.name, &font_id, max_text_w, max_lines);
 
     let line_spacing = name_font * 1.20;
-    let label_h = (name_lines.len() as f32 * line_spacing + 4.0).clamp(16.0, 36.0);
+    let label_h = if has_item_below {
+        (name_lines.len() as f32 * line_spacing + 4.0).clamp(16.0, 36.0)
+    } else {
+        (name_lines.len() as f32 * line_spacing + 4.0).max(16.0)
+    };
     let has_badge = entry.is_dir || entry.size > 0;
     let badge_h = if has_badge { badge_font + 6.0 } else { 0.0 };
 
@@ -558,23 +569,22 @@ fn masonry_grid_item(
         Vec2::new(item_w - 6.0, thumb_h),
     );
 
-    let max_text_w = (item_w - 8.0).max(10.0);
-    let font_id = FontId::new(name_font, FontFamily::Proportional);
     let text_w = name_lines.iter().map(|line| {
         let galley = ui.painter().layout_no_wrap(line.clone(), font_id.clone(), Color32::WHITE);
         galley.size().x
     }).fold(0.0_f32, f32::max);
     let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
     let label_top_y = rect.min.y + thumb_h + 6.0;
+    let name_center_y = label_top_y + label_h / 2.0;
+    let label_pill_rect = Rect::from_center_size(
+        Pos2::new(rect.center().x, name_center_y),
+        Vec2::new(name_text_w, label_h),
+    );
     let label_bottom_y = if has_badge {
         rect.max.y - 4.0
     } else {
-        label_top_y + label_h
+        label_pill_rect.max.y
     };
-    let label_pill_rect = Rect::from_center_size(
-        Pos2::new(rect.center().x, (label_top_y + label_bottom_y) / 2.0),
-        Vec2::new(name_text_w, (label_bottom_y - label_top_y).max(16.0)),
-    );
 
     // Nemo connected hitbox layout:
     // Tightened icon box for masonry when not media or thumbnail not yet ready
@@ -705,11 +715,17 @@ fn masonry_grid_item(
         let start_y = name_center_y - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
         for (li, line) in name_lines.iter().enumerate() {
             let ly = start_y + li as f32 * line_spacing;
-            let truncated = truncate_to_width(ui, line, &font_id, max_text_w);
+            let is_last = li + 1 == name_lines.len();
+            // Ara satırlarda ASLA ellipsis olmamalıdır! Yalnızca son satır kesilebilir.
+            let display_line = if is_last {
+                truncate_to_width(ui, line, &font_id, max_text_w)
+            } else {
+                line.clone()
+            };
             painter.text(
                 Pos2::new(rect.center().x, ly),
                 Align2::CENTER_CENTER,
-                truncated,
+                display_line,
                 font_id.clone(),
                 text_color,
             );
@@ -837,6 +853,7 @@ fn grid_item(
     item_h: f32,
     thumb_q: crate::backend::thumbnails::ThumbQuality,
     idx: usize,
+    has_item_below: bool,
 ) -> GridHitArea {
     let c      = &t.colors;
     let s      = &t.shape;
@@ -844,41 +861,79 @@ fn grid_item(
     let is_cut = false;
     let is_renaming = state.rename_target.as_deref() == Some(&entry.path);
 
-    let (rect, resp) = ui.allocate_exact_size(
-        Vec2::new(item_w, item_h),
-        Sense::click_and_drag(),
-    );
-
-    // Visual calculations: Proportional layout coordinates (Nemo style)
-    let icon_area_h = (item_h * 0.52).round();
-    let max_thumb_w = (item_w - 12.0).max(24.0);
-    let max_thumb_h = (icon_area_h - 6.0).max(24.0);
-    let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
-    let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, item_w, max_thumb_w, max_thumb_h, thumb_q);
-
     let max_text_w = (item_w - 8.0).max(20.0);
     let name_font  = (item_w * 0.096).clamp(9.5, 12.5);
     let sub_font   = (name_font * 0.86).clamp(8.5, 10.5);
     let name_font_id = FontId::new(name_font, FontFamily::Proportional);
     let sub_font_id  = FontId::new(sub_font, FontFamily::Proportional);
-
-    let label_top_y = rect.min.y + icon_area_h + 3.0;
-    let label_avail_h = (rect.max.y - 3.0 - label_top_y).max(18.0);
+    let line_spacing = name_font * 1.20;
+    let sub_line_step = sub_font * 1.25;
 
     // Multi-line filename wrapping (Nemo style satır başı)
-    let chars_per_line = ((max_text_w) / (name_font * 0.52)).max(8.0) as usize;
-    let name_lines = wrap_name_multiline(&entry.name, chars_per_line, 2);
-    let line_spacing = name_font * 1.20;
+    let max_lines = if has_item_below { 2 } else { 20 };
+    let name_lines = wrap_name_multiline_measured(ui, &entry.name, &name_font_id, max_text_w, max_lines);
+
+    let icon_area_h = (item_h * 0.52).round();
+    let label_top_y_offset = icon_area_h + 3.0;
+
+    let total_card_h = if has_item_below {
+        item_h
+    } else {
+        let name_pill_h = name_lines.len() as f32 * line_spacing + 4.0;
+        let needed_h = label_top_y_offset + name_pill_h + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0;
+        needed_h.max(item_h)
+    };
+
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(item_w, total_card_h),
+        Sense::click_and_drag(),
+    );
+
+    // Visual calculations: Proportional layout coordinates (Nemo style)
+    let max_thumb_w = (item_w - 12.0).max(24.0);
+    let max_thumb_h = (icon_area_h - 6.0).max(24.0);
+    let visual_center = Pos2::new(rect.center().x, rect.min.y + 3.0 + max_thumb_h / 2.0);
+    let visual_thumb = get_grid_thumb_rect(ui.ctx(), entry, visual_center, item_w, max_thumb_w, max_thumb_h, thumb_q);
+
+    let label_top_y = rect.min.y + label_top_y_offset;
 
     let text_w = name_lines.iter().map(|line| {
-        let truncated = truncate_to_width(ui, line, &name_font_id, max_text_w);
-        let galley = ui.painter().layout_no_wrap(truncated, name_font_id.clone(), Color32::WHITE);
+        let galley = ui.painter().layout_no_wrap(line.clone(), name_font_id.clone(), Color32::WHITE);
         galley.size().x
     }).fold(0.0_f32, f32::max);
     let name_text_w = (text_w + 8.0).clamp(24.0, max_text_w);
-    let name_pill_h = (name_lines.len() as f32 * line_spacing + 4.0).min(label_avail_h - 2.0);
 
-    let y_name = label_top_y + name_pill_h / 2.0;
+    let (name_pill_h, y_name, y_size, y_type, label_bottom_y) = if has_item_below {
+        let label_avail_h = (rect.min.y + item_h - 3.0 - label_top_y).max(18.0);
+        let pill_h = if is_renaming {
+            20.0_f32
+        } else {
+            (name_lines.len() as f32 * line_spacing + 4.0).min(label_avail_h - 2.0)
+        };
+        let y_n = label_top_y + pill_h / 2.0;
+        let y_s = (y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0).min(rect.min.y + item_h - sub_line_step - 2.0);
+        let y_t = (y_s + sub_line_step).min(rect.min.y + item_h - 4.0);
+        let l_bottom = if y_t < rect.min.y + item_h - 1.0 && y_t > y_s + sub_font * 0.8 {
+            y_t + sub_font * 0.7
+        } else if y_s < rect.min.y + item_h - 2.0 {
+            y_s + sub_font * 0.7
+        } else {
+            y_n + pill_h / 2.0
+        };
+        (pill_h, y_n, y_s, y_t, l_bottom)
+    } else {
+        let pill_h = if is_renaming {
+            20.0_f32
+        } else {
+            name_lines.len() as f32 * line_spacing + 4.0
+        };
+        let y_n = label_top_y + pill_h / 2.0;
+        let y_s = y_n + pill_h / 2.0 + sub_font * 0.7 + 2.0;
+        let y_t = y_s + sub_line_step;
+        let l_bottom = y_t + sub_font * 0.7;
+        (pill_h, y_n, y_s, y_t, l_bottom)
+    };
+
     let label_pill_rect = Rect::from_center_size(
         Pos2::new(rect.center().x, y_name),
         Vec2::new(name_text_w, name_pill_h),
@@ -1066,11 +1121,17 @@ fn grid_item(
             let start_y = y_name - ((name_lines.len() - 1) as f32 * line_spacing) / 2.0;
             for (li, line) in name_lines.iter().enumerate() {
                 let ly = start_y + li as f32 * line_spacing;
-                let truncated = truncate_to_width(ui, line, &name_font_id, max_text_w);
+                let is_last = li + 1 == name_lines.len();
+                // Ara satırlarda ASLA ellipsis olmamalıdır! Yalnızca son satır kesilebilir.
+                let display_line = if is_last {
+                    truncate_to_width(ui, line, &name_font_id, max_text_w)
+                } else {
+                    line.clone()
+                };
                 painter.text(
                     Pos2::new(rect.center().x, ly),
                     Align2::CENTER_CENTER,
-                    truncated,
+                    display_line,
                     name_font_id.clone(),
                     text_color,
                 );
@@ -2804,10 +2865,23 @@ fn icon_color_for(t: &AexTheme, entry: &FileEntry) -> Color32 {
     crate::ui::icon_color_for_entry(t, entry)
 }
 
-pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
-    let char_count = name.chars().count();
+/// Piksel ölçümlü veya özel genişlik ölçümlü çok satırlı dosya ismi sarma fonksiyonu.
+/// - Ara satırlarda ASLA '…' bulunmaz.
+/// - Sadece ve sadece son satırda (eğer kalan metin sığmıyorsa) '…' eklenir.
+/// - Her satırın genişliği `measure` fonksiyonu ile `max_width` sınırına göre kontrol edilir.
+pub fn wrap_name_multiline_with_measure<F: Fn(&str) -> f32>(
+    name: &str,
+    max_lines: usize,
+    max_width: f32,
+    measure: F,
+) -> Vec<String> {
     let max_lines = max_lines.max(1);
-    if char_count <= chars_per_line {
+    if name.is_empty() || max_width < 1.0 {
+        return vec![name.to_string()];
+    }
+
+    // Eğer ismin tamamı sığıyorsa doğrudan tek satır olarak döndür
+    if measure(name) <= max_width {
         return vec![name.to_string()];
     }
 
@@ -2816,27 +2890,57 @@ pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) 
     let mut cursor = 0;
 
     while cursor < chars.len() && lines.len() < max_lines {
-        let remaining = chars.len() - cursor;
+        let remaining_len = chars.len() - cursor;
         let is_last_line = lines.len() + 1 == max_lines;
+        let remaining_str: String = chars[cursor..].iter().collect();
 
-        if remaining <= chars_per_line {
-            lines.push(chars[cursor..].iter().collect());
+        // Kalan kısım doğrudan sığıyorsa ekle ve bitir
+        if measure(&remaining_str) <= max_width {
+            lines.push(remaining_str);
             break;
         }
 
+        // Son satır ise: Sığmıyor, Nemo gibi '…' ile son satırı kes
         if is_last_line {
-            // Son satır: Nemo gibi '…' ile sınırlandır
-            let take_len = chars_per_line.saturating_sub(1).min(remaining);
-            let s: String = chars[cursor..cursor + take_len].iter().collect();
-            lines.push(format!("{}…", s));
+            let mut low = 0;
+            let mut high = remaining_len;
+            let mut best = String::from("…");
+            while low <= high {
+                let mid = (low + high) / 2;
+                let candidate: String = format!("{}…", chars[cursor..cursor + mid].iter().collect::<String>());
+                if measure(&candidate) <= max_width {
+                    best = candidate;
+                    low = mid + 1;
+                } else {
+                    if mid == 0 { break; }
+                    high = mid - 1;
+                }
+            }
+            lines.push(best);
             break;
         }
 
-        let lookahead = chars_per_line.min(remaining);
-        let min_break = (chars_per_line / 3).max(2).min(lookahead);
-        let mut split_at = lookahead;
+        // Ara satır: Kesinlikle '…' ALAMAZ!
+        // max_width içine sığabilecek en uzun karakter sayısını ikili aramayla bul
+        let mut low = 1;
+        let mut high = remaining_len;
+        let mut best_fit = 1;
+        while low <= high {
+            let mid = (low + high) / 2;
+            let candidate: String = chars[cursor..cursor + mid].iter().collect();
+            if measure(&candidate) <= max_width {
+                best_fit = mid;
+                low = mid + 1;
+            } else {
+                if mid == 0 { break; }
+                high = mid - 1;
+            }
+        }
 
-        for i in (min_break..=lookahead).rev() {
+        // Bulunan best_fit içinde uygun bir kelime/karakter ayırıcı (boşluk, tire, altçizgi, nokta) ara
+        let min_break = (best_fit / 3).max(2).min(best_fit);
+        let mut split_at = best_fit;
+        for i in (min_break..=best_fit).rev() {
             let ch = chars[cursor + i - 1];
             if ch == ' ' || ch == '-' || ch == '_' || ch == '.' {
                 split_at = i;
@@ -2859,6 +2963,22 @@ pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) 
     }
 
     lines
+}
+
+pub fn wrap_name_multiline_measured(
+    ui: &Ui,
+    name: &str,
+    font_id: &FontId,
+    max_width: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    wrap_name_multiline_with_measure(name, max_lines, max_width, |text| {
+        ui.painter().layout_no_wrap(text.to_string(), font_id.clone(), Color32::WHITE).size().x
+    })
+}
+
+pub fn wrap_name_multiline(name: &str, chars_per_line: usize, max_lines: usize) -> Vec<String> {
+    wrap_name_multiline_with_measure(name, max_lines, chars_per_line as f32, |s| s.chars().count() as f32)
 }
 
 pub fn wrap_name_two_lines(name: &str, chars_per_line: usize) -> (String, Option<String>) {
@@ -3941,6 +4061,91 @@ mod tests {
             Pos2::new(visual_thumb.max.x + thumb_margin, (label_top_y + 1.0).max(visual_thumb.max.y + thumb_margin)),
         );
         assert_eq!(thumb_hit.center().x, rect.center().x);
+    }
+
+    #[test]
+    fn test_intermediate_lines_never_contain_ellipsis() {
+        let long_name = "super_architecture_specification_document_v2_final_release_notes.pdf";
+        // 3 satır sınırı ile sar
+        let lines = wrap_name_multiline(long_name, 14, 3);
+        assert_eq!(lines.len(), 3);
+        // Ara satırlar (0 ve 1) ASLA ellipsis içermemelidir!
+        assert!(!lines[0].contains('…'), "Ara satır 0 ellipsis içeremez: {}", lines[0]);
+        assert!(!lines[1].contains('…'), "Ara satır 1 ellipsis içeremez: {}", lines[1]);
+        // Yalnızca ve yalnızca son satır (2) kesildiğinde ellipsis almalıdır
+        assert!(lines[2].ends_with('…'), "Son satır 2 kesildiğinde '…' ile bitmelidir: {}", lines[2]);
+
+        // 2 satır sınırı ile (standart grid has_item_below = true)
+        let lines_2 = wrap_name_multiline(long_name, 14, 2);
+        assert_eq!(lines_2.len(), 2);
+        assert!(!lines_2[0].contains('…'), "2 satırlı modda satır 0 asla ellipsis içeremez: {}", lines_2[0]);
+        assert!(lines_2[1].ends_with('…'), "2 satırlı modda son satır ellipsis ile bitmelidir: {}", lines_2[1]);
+    }
+
+    #[test]
+    fn test_has_item_below_false_shows_all_lines_no_ellipsis() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |_| {});
+        let font_id = FontId::new(10.0, FontFamily::Proportional);
+        let max_text_w = 90.0_f32;
+
+        let long_name = "very_long_project_database_backup_archive_2026_q4_uncompressed.tar.gz";
+
+        // has_item_below == true durumu: max_lines = 2
+        let lines_with_below = ctx.fonts(|f| {
+            wrap_name_multiline_with_measure(long_name, 2, max_text_w, |s| {
+                f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE).size().x
+            })
+        });
+        assert_eq!(lines_with_below.len(), 2);
+        assert!(!lines_with_below[0].contains('…'), "Satır 0 asla ellipsis içeremez");
+        assert!(lines_with_below[1].ends_with('…'), "Satır 1 kesildiği için ellipsis almalı");
+
+        // has_item_below == false durumu: max_lines = 20 (altında öğe yok, tüm isim satır atlayarak tam gözükür)
+        let lines_no_below = ctx.fonts(|f| {
+            wrap_name_multiline_with_measure(long_name, 20, max_text_w, |s| {
+                f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE).size().x
+            })
+        });
+        // 3 veya daha fazla satır oluşturmalı
+        assert!(lines_no_below.len() >= 3, "Altında öğe yokken en az 3 satıra bölünmeli, oluşan: {}", lines_no_below.len());
+        // HİÇBİR satırda (son satır dahil!) ellipsis olmamalıdır çünkü ismin tamamı sığmıştır!
+        for (i, line) in lines_no_below.iter().enumerate() {
+            assert!(!line.contains('…'), "Satır {} ellipsis içermemelidir: '{}'", i, line);
+        }
+
+        // Birleştirilen metin orijinal dosya adının tüm içeriğini korumalıdır
+        let reconstructed = lines_no_below.concat();
+        assert_eq!(reconstructed, long_name);
+    }
+
+    #[test]
+    fn test_has_item_below_geometry_and_pill_expansion() {
+        let name_font = 10.0_f32;
+        let line_spacing = name_font * 1.20; // 12.0
+        let item_h = 100.0_f32;
+        let icon_area_h = (item_h * 0.52).round(); // 52.0
+        let label_top_y_offset = icon_area_h + 3.0; // 55.0
+        let label_avail_h = (item_h - 3.0 - label_top_y_offset).max(18.0); // 42.0
+
+        // 4 satırlık uzun bir isim
+        let four_line_count = 4;
+
+        // has_item_below == true iken: max 2 satır, name_pill_h label_avail_h ile sınırlı
+        let pill_h_with_item_below = (2.0_f32 * line_spacing + 4.0).min(label_avail_h - 2.0);
+        assert_eq!(pill_h_with_item_below, 28.0);
+
+        // has_item_below == false iken: name_pill_h satır sayısıyla büyür!
+        let pill_h_no_item_below = four_line_count as f32 * line_spacing + 4.0; // 4 * 12.0 + 4.0 = 52.0
+        assert_eq!(pill_h_no_item_below, 52.0);
+        assert!(pill_h_no_item_below > pill_h_with_item_below);
+
+        // total_card_h de buna göre büyür
+        let sub_font = (name_font * 0.86).clamp(8.5, 10.5); // 8.6
+        let sub_line_step = sub_font * 1.25;
+        let needed_h = label_top_y_offset + pill_h_no_item_below + sub_font * 0.7 + 2.0 + sub_line_step + sub_font * 0.7 + 8.0;
+        let total_card_h = needed_h.max(item_h);
+        assert!(total_card_h > item_h, "Kart yüksekliği genişleyen isme göre büyümelidir: {} > {}", total_card_h, item_h);
     }
 }
 
