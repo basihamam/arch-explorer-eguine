@@ -816,7 +816,7 @@ fn masonry_grid_item(
         if !state.selection.is_selected(&entry.path) {
             state.selection.select_only(entry.path.clone());
         }
-        let sources = state.selection.paths();
+        let sources = state.selected_paths();
         let copy = ui.input(|i| i.modifiers.ctrl);
         spawn_native_drag(&sources);
         state.drag.start(sources, copy);
@@ -840,7 +840,7 @@ fn masonry_grid_item(
             let copy = state.drag.copy_mode;
             state.drag.cancel();
             if !sources.contains(&dest) {
-                state.start_transfer(sources, dest, copy);
+                state.start_transfer_drag(sources, dest, copy);
             }
         }
     }
@@ -1269,7 +1269,7 @@ fn grid_item(
         if !state.selection.is_selected(&entry.path) {
             state.selection.select_only(entry.path.clone());
         }
-        let sources = state.selection.paths();
+        let sources = state.selected_paths();
         let copy = ui.input(|i| i.modifiers.ctrl);
         // Sürükle-bırak panoyu (clipboard) kirletmez; doğrudan yerel Wayland DnD motorunu başlatır
         spawn_native_drag(&sources);
@@ -1295,7 +1295,7 @@ fn grid_item(
             let copy = state.drag.copy_mode;
             state.drag.cancel();
             if !sources.contains(&dest) {
-                state.start_transfer(sources, dest, copy);
+                state.start_transfer_drag(sources, dest, copy);
             }
         }
     }
@@ -1873,7 +1873,7 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                     if !state.selection.is_selected_at(&entry.path, idx) {
                         state.selection.select_only(entry.path.clone());
                     }
-                    let sources = state.selection.paths();
+                    let sources = state.selected_paths();
                     let copy = ui.input(|i| i.modifiers.ctrl);
                     // Sürükle-bırak panoyu (clipboard) kirletmez; doğrudan yerel Wayland DnD motorunu başlatır
                     spawn_native_drag(&sources);
@@ -1899,7 +1899,7 @@ fn list_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[FileEnt
                         let copy = state.drag.copy_mode;
                         state.drag.cancel();
                         if !sources.contains(&dest) {
-                            state.start_transfer(sources, dest, copy);
+                            state.start_transfer_drag(sources, dest, copy);
                         }
                     }
                 }
@@ -2547,7 +2547,7 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
                             if !state.selection.is_selected(&entry.path) {
                                 state.selection.select_only(entry.path.clone());
                             }
-                            let sources = state.selection.paths();
+                            let sources = state.selected_paths();
                             let copy = ui.input(|i| i.modifiers.ctrl);
                             spawn_native_drag(&sources);
                             state.drag.start(sources, copy);
@@ -2568,7 +2568,7 @@ fn compact_view(ui: &mut Ui, t: &AexTheme, state: &mut AppState, entries: &[File
                                 let copy = state.drag.copy_mode;
                                 state.drag.cancel();
                                 if !sources.contains(&dest) {
-                                    state.start_transfer(sources, dest, copy);
+                                    state.start_transfer_drag(sources, dest, copy);
                                 }
                             }
                         }

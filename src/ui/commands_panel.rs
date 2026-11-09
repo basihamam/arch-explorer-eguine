@@ -222,7 +222,7 @@ fn tab_list(ui: &mut Ui, t: &AexTheme, state: &mut AppState, ps: &mut CmdPanelSt
                             .fill(Color32::from_rgba_unmultiplied(c.accent().r(),c.accent().g(),c.accent().b(),20))
                             .rounding(Rounding::same(s.radius_sm)).stroke(Stroke::NONE)).clicked() {
                             let cmd_id = cmd.id.clone();
-                            let sel = state.selection.paths().first().cloned();
+                            let sel = state.selected_paths().first().cloned();
                             let cur_dir = state.nav.current_path.clone();
                             std::thread::spawn(move || {
                                 crate::backend::commands::run_user_command(cmd_id, sel, cur_dir).ok();

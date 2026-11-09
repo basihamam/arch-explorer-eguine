@@ -1093,8 +1093,6 @@ impl eframe::App for ArchExplorer {
             let is_mouse_down = ctx.input(|i| i.pointer.primary_down() || i.pointer.button_down(egui::PointerButton::Primary) || i.pointer.any_down());
             if !is_mouse_down {
                 self.state.drag.cancel();
-                self.state.drag.last_drag_sources.clear();
-                self.state.drag.last_drag_time = None;
             }
         }
 
@@ -1115,7 +1113,11 @@ impl eframe::App for ArchExplorer {
             || !self.state.notify.items.is_empty()
             || self.state.drag.dragging
             || self.state.media_player.is_playing
-            || self.state.pending_search_changed.is_some();
+            || self.state.pending_search_changed.is_some()
+            || self.state.conflict_dialog.is_some()
+            || self.state.pending_transfer.is_some()
+            || self.state.pending_root_auth.is_some()
+            || self.state.delete_error_dialog.is_some();
 
         if is_active {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
@@ -1225,7 +1227,7 @@ impl ArchExplorer {
             let search_focused = self.state.search.active && self.state.search.is_focused;
 
             // Ctrl+C / Event::Copy — Copy
-            let is_copy = (i.key_pressed(Key::C) && i.modifiers.ctrl)
+            let is_copy = (i.key_pressed(Key::C) && (i.modifiers.ctrl || i.modifiers.command))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             if is_copy && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1237,7 +1239,7 @@ impl ArchExplorer {
             }
 
             // Ctrl+X / Event::Cut — Cut
-            let is_cut = (i.key_pressed(Key::X) && i.modifiers.ctrl)
+            let is_cut = (i.key_pressed(Key::X) && (i.modifiers.ctrl || i.modifiers.command))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             if is_cut && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1322,7 +1324,7 @@ impl ArchExplorer {
                         let v_len = visible_entries.len();
                         if v_len > 0 {
                             let cur_path = self.state.selection.last_clicked.clone()
-                                .or_else(|| self.state.selection.paths().first().cloned());
+                                .or_else(|| self.state.selected_paths().first().cloned());
                             let cur_idx = cur_path.and_then(|p| visible_entries.iter().position(|e| e.path == p));
 
                             let next_idx = match cur_idx {
@@ -1403,7 +1405,7 @@ impl ArchExplorer {
 
             // F2 — inline rename
             if i.key_pressed(Key::F2) && !term_typing {
-                let sel = self.state.selection.paths();
+                let sel = self.state.selected_paths();
                 if sel.len() == 1 {
                     self.state.start_rename(&sel[0]);
                 }
@@ -1449,7 +1451,7 @@ impl ArchExplorer {
                 if self.state.rename_target.is_some() {
                     self.state.commit_rename();
                 } else {
-                    let sel = self.state.selection.paths();
+                    let sel = self.state.selected_paths();
                     if sel.len() == 1 {
                         let p = &sel[0];
                         if let Some(entry) = self.state.dir.entries.iter().find(|e| e.path == *p).cloned() {
@@ -1892,7 +1894,7 @@ impl ArchExplorer {
             // Eğer bırakılan dosyalar bu uygulamanın kendi başlattığı dahili sürüklemeden geldiyse,
             // bunu harici (external) bir transfer gibi ele alma!
             let is_from_self = if let Some(last_time) = self.state.drag.last_drag_time {
-                if last_time.elapsed() < std::time::Duration::from_millis(3000) {
+                if last_time.elapsed() < std::time::Duration::from_millis(10000) {
                     paths.iter().any(|p| {
                         let p_path = std::path::Path::new(p);
                         self.state.drag.last_drag_sources.iter().any(|src| {
@@ -1906,67 +1908,78 @@ impl ArchExplorer {
                 false
             };
 
-            if self.state.drag.dragging {
-                // Dahili sürükleme aktifken dropped_files geldi:
-                // Eğer widget'lar (klasör veya sekme) drop'u henüz yakalamadıysa, fare altındaki pane/dizine transferi tamamla!
-                let target_dir = if let Some(target) = self.state.drag.target_dir.take() {
-                    target
-                } else if self.state.dual_pane {
-                    let screen_w = ctx.screen_rect().width();
-                    let ptr_x = ctx.pointer_interact_pos()
-                        .or_else(|| ctx.pointer_latest_pos())
-                        .or_else(|| ctx.pointer_hover_pos())
-                        .or_else(|| ctx.input(|i| i.pointer.latest_pos()))
-                        .map(|p| p.x)
-                        .unwrap_or(0.0);
+            let is_internal_drag = self.state.drag.dragging || is_from_self;
 
-                    let sidebar_w = if ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("sidebar_collapsed")).unwrap_or(false)) {
-                        0.0
-                    } else {
-                        t.layout.sidebar_width
-                    };
-                    let content_w = (screen_w - sidebar_w).max(100.0);
-                    let mid_x = sidebar_w + content_w / 2.0;
+            // Target directory calculation
+            let target_dir = if let Some(target) = self.state.drag.target_dir.take() {
+                target
+            } else if self.state.dual_pane {
+                let screen_w = ctx.screen_rect().width();
+                let ptr_x = ctx.pointer_interact_pos()
+                    .or_else(|| ctx.pointer_latest_pos())
+                    .or_else(|| ctx.pointer_hover_pos())
+                    .or_else(|| ctx.input(|i| i.pointer.latest_pos()))
+                    .map(|p| p.x)
+                    .unwrap_or(0.0);
 
-                    let left_active = self.state.active_pane == crate::state::PaneId::Left;
-                    if ptr_x > mid_x {
-                        if left_active {
-                            self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
-                        } else {
-                            self.state.active_context_path()
-                        }
+                let sidebar_w = if ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("sidebar_collapsed")).unwrap_or(false)) {
+                    0.0
+                } else {
+                    t.layout.sidebar_width
+                };
+                let content_w = (screen_w - sidebar_w).max(100.0);
+                let mid_x = sidebar_w + content_w / 2.0;
+
+                let left_active = self.state.active_pane == crate::state::PaneId::Left;
+                if ptr_x > mid_x {
+                    if left_active {
+                        self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
                     } else {
-                        if left_active {
-                            self.state.active_context_path()
-                        } else {
-                            self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
-                        }
+                        self.state.active_context_path()
                     }
                 } else {
-                    self.state.active_context_path()
-                };
-
-                let copy_mode = self.state.drag.copy_mode;
-                let sources = if !paths.is_empty() { paths.clone() } else { self.state.drag.sources.clone() };
-                self.state.drag.cancel();
-                self.state.drag.last_drag_sources.clear();
-                self.state.drag.last_drag_time = None;
-
-                if !sources.is_empty() {
-                    log::info!("Dahili sürükleme hedef dizine aktarılıyor -> {}: {:?}", target_dir, sources);
-                    self.state.notify.info(format!("{} öğe aktarılıyor -> {}", sources.len(), target_dir));
-                    self.state.start_transfer(sources, target_dir, copy_mode);
-                    ctx.request_repaint();
+                    if left_active {
+                        self.state.active_context_path()
+                    } else {
+                        self.state.other_pane_path().unwrap_or_else(|| self.state.active_context_path())
+                    }
                 }
-            } else if is_from_self {
-                log::debug!("Dahili sürükleme zaten UI tarafından ele alındı, mükerrer aktarım atlanıyor.");
-                self.state.drag.last_drag_sources.clear();
-                self.state.drag.last_drag_time = None;
-            } else if !paths.is_empty() {
-                let target_dir = self.state.active_context_path();
-                log::info!("External files dropped into {}: {:?}", target_dir, paths);
-                self.state.notify.info(format!("{} dosya bırakıldı -> {}", paths.len(), target_dir));
-                self.state.start_transfer(paths, target_dir, true);
+            } else {
+                self.state.active_context_path()
+            };
+
+            let copy_mode = self.state.drag.copy_mode;
+            let sources = if !paths.is_empty() {
+                paths.clone()
+            } else {
+                self.state.drag.sources.clone()
+            };
+
+            self.state.drag.cancel();
+            self.state.drag.last_drag_sources.clear();
+            self.state.drag.last_drag_time = None;
+
+            // Sürüklenen dosya kendi bulunduğu klasöre bırakıldıysa (iptal / no-op): Asla kopya oluşturma!
+            let effective_sources: Vec<String> = sources.into_iter().filter(|s| {
+                let s_path = std::path::Path::new(s);
+                if let Some(parent) = s_path.parent() {
+                    let is_same_dir = match (parent.canonicalize(), std::path::Path::new(&target_dir).canonicalize()) {
+                        (Ok(p1), Ok(p2)) => p1 == p2,
+                        _ => parent.to_string_lossy().trim_end_matches('/') == target_dir.trim_end_matches('/'),
+                    };
+                    !is_same_dir
+                } else {
+                    true
+                }
+            }).collect();
+
+            if effective_sources.is_empty() {
+                log::info!("Drag dropped back to source directory, no-op");
+            } else {
+                let is_copy = if is_internal_drag { copy_mode } else { true };
+                log::info!("Files dropped into {} (copy={}): {:?}", target_dir, is_copy, effective_sources);
+                self.state.notify.info(format!("{} öğe aktarılıyor -> {}", effective_sources.len(), target_dir));
+                self.state.start_transfer_drag(effective_sources, target_dir, is_copy);
                 ctx.request_repaint();
             }
         }
@@ -3011,12 +3024,13 @@ fn render_conflict_dialog(
     let ph = 370.0_f32;
     let d_rect = Rect::from_center_size(screen.center(), Vec2::new(pw, ph));
 
-    // Backdrop
+    // Backdrop — order Foreground and allocate full screen click sense to dim background and capture clicks
     egui::Area::new(Id::new("conflict_dialog_backdrop"))
         .fixed_pos(screen.min)
-        .order(Order::Background)
+        .order(Order::Foreground)
         .show(ctx, |ui| {
-            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
+            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_rgba_unmultiplied(0, 0, 0, 160));
+            ui.allocate_rect(screen, Sense::click());
         });
 
     let mut action_choice: Option<crate::state::ConflictChoice> = None;

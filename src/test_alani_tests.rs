@@ -75,6 +75,48 @@ mod tests {
     }
 
     #[test]
+    fn test_02_cakisma_start_transfer_dialog_ve_drag_noop() {
+        use crate::state::AppState;
+
+        let src_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/kaynak_klasor", TEST_ALANI);
+        let hedef_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/hedef_klasor", TEST_ALANI);
+
+        let mut state = AppState::new();
+        let list_res = crate::backend::fs_ops::list_directory(src_dir.clone(), false).unwrap();
+        state.dir.entries = std::sync::Arc::new(list_res.entries);
+        assert_eq!(state.dir.entries.len(), 3, "kaynak_klasor must have 3 files");
+
+        // 1. Ctrl+A selection verification
+        state.selection.select_all(&state.dir.entries);
+        let sel = state.selected_paths();
+        assert_eq!(sel.len(), 3, "select_all must return all 3 paths in selected_paths()");
+        assert_eq!(state.selection.paths().len(), 3, "select_all must also populate selection.paths()");
+
+        // 2. Drag-and-drop back into same directory (kaynak_klasor) must be strict NO-OP!
+        state.start_transfer_drag(sel.clone(), src_dir.clone(), false);
+        assert!(state.conflict_dialog.is_none(), "Drag to same dir (!copy) must NOT open conflict dialog");
+        assert!(state.pending_transfer.is_none(), "Drag to same dir (!copy) must NOT create transfer request");
+
+        state.start_transfer_drag(sel.clone(), src_dir.clone(), true);
+        assert!(state.conflict_dialog.is_none(), "Drag to same dir (copy) must NOT open conflict dialog");
+        assert!(state.pending_transfer.is_none(), "Drag to same dir (copy) must NOT create duplicate copy");
+
+        // 3. Transfer to hedef_klasor where identical file names exist: MUST open conflict dialog!
+        state.start_transfer(sel.clone(), hedef_dir.clone(), true);
+        assert!(state.conflict_dialog.is_some(), "Transfer to folder with existing files MUST open conflict dialog!");
+        assert!(state.pending_transfer.is_none(), "All files have conflicts so pending_transfer must be none until user chooses action");
+
+        let diag = state.conflict_dialog.as_ref().unwrap();
+        assert_eq!(diag.queue.len(), 3, "Conflict dialog must contain all 3 conflicting files");
+        assert_eq!(diag.dest_dir, hedef_dir);
+
+        // Verify conflict item details
+        let first = &diag.queue[0];
+        assert!(!first.dest_path.is_empty());
+        assert_ne!(first.src_path, first.dest_path);
+    }
+
+    #[test]
     fn test_03_metin_kod_ve_veri_dosyalari_syntax_ve_gizli() {
         let code_p = format!("{}/03_Metin_Kod_ve_Veri_Dosyalari/ornek_kod.rs", TEST_ALANI);
         let prev = crate::backend::preview::get_file_preview(code_p).expect("Rust preview failed");

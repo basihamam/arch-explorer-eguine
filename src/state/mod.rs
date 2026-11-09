@@ -749,6 +749,10 @@ impl SelectionState {
 
     pub fn select_all(&mut self, entries: &[FileEntry]) {
         self.selected.clear();
+        self.ranges.clear();
+        for e in entries {
+            self.selected.insert(e.path.clone());
+        }
         if !entries.is_empty() {
             self.ranges = vec![(0, entries.len() - 1)];
         }
@@ -765,13 +769,9 @@ impl SelectionState {
                 self.selected.clear();
                 self.ranges.clear();
             }
-            if hi.saturating_sub(lo) > 200 {
-                // High-performance Range storage: yüz binlerce dosyada O(1) anında seçim
-                self.ranges.push((lo, hi));
-            } else {
-                for e in &entries[lo..=hi] {
-                    self.selected.insert(e.path.clone());
-                }
+            self.ranges.push((lo, hi));
+            for e in &entries[lo..=hi] {
+                self.selected.insert(e.path.clone());
             }
         } else if let Some(b) = idx_to {
             // Anchor görünür listede bulunamazsa sadece hedefi seç/ekle
@@ -802,11 +802,15 @@ impl SelectionState {
     }
 
     pub fn count(&self) -> usize {
-        let mut total = self.selected.len();
-        for &(lo, hi) in &self.ranges {
-            total += hi.saturating_sub(lo) + 1;
+        if !self.selected.is_empty() {
+            self.selected.len()
+        } else {
+            let mut total = 0;
+            for &(lo, hi) in &self.ranges {
+                total += hi.saturating_sub(lo) + 1;
+            }
+            total
         }
-        total
     }
 
     pub fn paths(&self) -> Vec<String> {
@@ -2228,10 +2232,18 @@ impl AppState {
         let sources = self.drag.sources.clone();
         let copy = self.drag.copy_mode;
         self.drag.cancel();
-        self.start_transfer(sources, dest_dir, copy);
+        self.start_transfer_drag(sources, dest_dir, copy);
+    }
+
+    pub fn start_transfer_drag(&mut self, sources: Vec<String>, dest_dir: String, copy: bool) {
+        self.start_transfer_ex(sources, dest_dir, copy, true);
     }
 
     pub fn start_transfer(&mut self, sources: Vec<String>, dest_dir: String, copy: bool) {
+        self.start_transfer_ex(sources, dest_dir, copy, false);
+    }
+
+    pub fn start_transfer_ex(&mut self, sources: Vec<String>, dest_dir: String, copy: bool, is_drag: bool) {
         if sources.is_empty() { return; }
 
         let dest_is_adb = dest_dir.starts_with("adb://");
@@ -2275,10 +2287,10 @@ impl AppState {
             });
 
             if is_same_file {
-                if !copy {
-                    continue; // Kendi bulunduğu klasöre taşıma / geri bırakma kesinlikle no-op
+                if is_drag || !copy {
+                    continue; // Sürükle-bırak ile aynı klasöre bırakma veya taşıma kesinlikle no-op
                 }
-                // Aynı dizinde kopyalama: Çakışma penceresi açma! Otomatik "dosya (2).ext" oluştur
+                // Aynı dizinde kopyalama (Paste / Duplicate): Çakışma penceresi açma! Otomatik "dosya (2).ext" oluştur
                 let mut unique_dst = crate::backend::fs_ops::resolve_name_conflict(
                     std::path::Path::new(&dest_dir),
                     &fname,

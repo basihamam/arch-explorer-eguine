@@ -327,7 +327,7 @@ fn bookmark_item(ui: &mut Ui, t: &AexTheme, state: &mut AppState, bm: &Bookmark)
         let sources = state.drag.sources.clone();
         let copy = state.drag.copy_mode;
         state.drag.cancel();
-        state.start_transfer(sources, dest, copy);
+        state.start_transfer_drag(sources, dest, copy);
     }
 
     // Context menu
@@ -536,7 +536,7 @@ fn device_sidebar_item(
                 let sources = state.drag.sources.clone();
                 let copy = state.drag.copy_mode;
                 state.drag.cancel();
-                state.start_transfer(sources, dest, copy);
+                state.start_transfer_drag(sources, dest, copy);
             }
         }
     }
@@ -712,7 +712,7 @@ fn adb_sidebar_item(
             let sources = state.drag.sources.clone();
             let copy = state.drag.copy_mode;
             state.drag.cancel();
-            state.start_transfer(sources, dest, copy);
+            state.start_transfer_drag(sources, dest, copy);
         }
     }
 }
@@ -801,7 +801,7 @@ fn quick_item(
                 let sources = state.drag.sources.clone();
                 let copy = state.drag.copy_mode;
                 state.drag.cancel();
-                state.start_transfer(sources, dest, copy);
+                state.start_transfer_drag(sources, dest, copy);
             }
         }
     }

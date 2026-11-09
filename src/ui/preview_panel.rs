@@ -36,7 +36,7 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState, tx: &std::sync::m
             .auto_shrink([false; 2])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
-                let selected: Vec<String> = state.selection.paths();
+                let selected: Vec<String> = state.selected_paths();
 
                 if selected.is_empty() {
                     ui.horizontal(|ui| {

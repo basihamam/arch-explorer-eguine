@@ -147,7 +147,7 @@ pub fn render(
                     // Paste
                     if has_clipboard {
                         if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
-                            let p = if entry.is_dir { entry.path.clone() } else { state.nav.current_path.clone() };
+                            let p = if entry.is_dir { entry.path.clone() } else { state.active_context_path() };
                             if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                                 let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                                 if !is_copy {
@@ -295,7 +295,7 @@ pub fn render(
                                     }
 
                                     // Open Terminal Here
-                                    let dir_path = if entry.is_dir { entry.path.clone() } else { state.nav.current_path.clone() };
+                                    let dir_path = if entry.is_dir { entry.path.clone() } else { state.active_context_path() };
                                     if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).ctx_act() {
                                         state.open_terminal(Some(dir_path));
                                         state.panels.close_context_menu();
@@ -307,7 +307,7 @@ pub fn render(
                                     // Create Symlink
                                     if ctx_item(ui, t, icon(t, "symlink"), "Create Symlink", None).ctx_act() {
                                         let src  = entry.path.clone();
-                                        let dest = format!("{}/{}.lnk", state.nav.current_path, entry.name);
+                                        let dest = format!("{}/{}.lnk", state.active_context_path(), entry.name);
                                         std::os::unix::fs::symlink(&src, &dest).ok();
                                         state.refresh();
                                         state.panels.close_context_menu();
@@ -446,7 +446,7 @@ pub fn render(
                     if !is_current_in_trash {
                         if has_clipboard {
                             if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
-                                let p = state.nav.current_path.clone();
+                                let p = state.active_context_path();
                                 if let Some(cb) = crate::backend::clipboard::clipboard_get() {
                                     let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                                     if !is_copy {
@@ -461,13 +461,13 @@ pub fn render(
                         }
 
                         if ctx_item(ui, t, icon(t, "new_folder"), "New Folder", Some("Ctrl+Shift+N")).ctx_act() {
-                            let path = unique_new_folder_path(&state.nav.current_path);
+                            let path = unique_new_folder_path(&state.active_context_path());
                             try_create_dir_or_elevate(state, path);
                             state.panels.close_context_menu();
                         }
 
                         if ctx_item(ui, t, icon(t, "new_file"), "New File", Some("Ctrl+N")).ctx_act() {
-                            let path = unique_new_file_path(&state.nav.current_path);
+                            let path = unique_new_file_path(&state.active_context_path());
                             try_create_file_or_elevate(state, path);
                             state.panels.close_context_menu();
                         }
@@ -476,7 +476,7 @@ pub fn render(
                     }
 
                     // Open Terminal in current dir
-                    let cur_path = state.nav.current_path.clone();
+                    let cur_path = state.active_context_path();
                     if ctx_item(ui, t, icon(t, "terminal"), "Open Terminal Here", None).ctx_act() {
                         state.open_terminal(Some(cur_path));
                         state.panels.close_context_menu();

@@ -508,7 +508,7 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                     let sources = state.drag.sources.clone();
                     let copy = state.drag.copy_mode;
                     state.drag.cancel();
-                    state.start_transfer(sources, root_target.clone(), copy);
+                    state.start_transfer_drag(sources, root_target.clone(), copy);
                 }
             }
 
@@ -668,7 +668,7 @@ fn breadcrumb(ui: &mut Ui, t: &AexTheme, state: &mut AppState, width: f32) -> (R
                         let sources = state.drag.sources.clone();
                         let copy = state.drag.copy_mode;
                         state.drag.cancel();
-                        state.start_transfer(sources, nav_path.clone(), copy);
+                        state.start_transfer_drag(sources, nav_path.clone(), copy);
                     }
                 } else if seg_resp.hovered() && !is_last {
                     ui.painter().rect_filled(seg_rect.shrink(2.0), Rounding::same(s.radius_sm), c.bg_surface1());
