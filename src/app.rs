@@ -3122,45 +3122,49 @@ fn render_conflict_dialog(
 
     let screen = ctx.screen_rect();
     let pw = 580.0_f32;
-    let ph = 410.0_f32;
+    let ph = 420.0_f32;
     let d_rect = Rect::from_center_size(screen.center(), Vec2::new(pw, ph));
 
     let mut action_choice: Option<crate::state::ConflictChoice> = None;
     let mut cancel_clicked = false;
     let mut toggle_apply_all: Option<bool> = None;
 
-    // 1. Arka Planı Karart (Backdrop) — Order::Middle katmanında, tüm tıklamaları yakalar
+    // 1. Arka Planı Karart (Backdrop) — Order::Background katmanında çizilir, buton tıklamalarını asla engellemez!
     egui::Area::new(Id::new("conflict_dialog_backdrop"))
         .fixed_pos(screen.min)
-        .order(Order::Middle)
+        .order(Order::Background)
         .show(ctx, |ui| {
             ui.painter().rect_filled(
                 screen,
                 Rounding::ZERO,
-                Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                Color32::from_rgba_unmultiplied(0, 0, 0, 150),
             );
-            let r = ui.allocate_rect(screen, Sense::click());
-            let click_pos = ctx.input(|i| i.pointer.interact_pos());
-            if r.clicked() && click_pos.map(|p| !d_rect.contains(p)).unwrap_or(false) {
-                cancel_clicked = true;
-            }
         });
 
-    // 2. Modal Pencere — Order::Foreground katmanında, karartmanın KESİNLİKLE ÜSTÜNDEDİR!
+    // Modal dışına tıklanırsa kapat (ASLA allocate_rect ile dialog butonlarının tıklamasını çalmaz!)
+    if ctx.input(|i| i.pointer.any_click()) {
+        if let Some(click_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+            if !d_rect.contains(click_pos) && click_pos.y > 36.0 {
+                cancel_clicked = true;
+            }
+        }
+    }
+
+    // 2. Modal Pencere — Order::Foreground katmanında, kararmanın KESİNLİKLE ÜSTÜNDEDİR!
     egui::Area::new(Id::new("conflict_dialog_modal"))
         .fixed_pos(d_rect.min)
         .order(Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame {
-                fill: c.bg_mantle(),
+                fill: c.bg_surface0(), // Belirgin, açık ve kararmadan ayrışan parlak yüzey!
                 rounding: Rounding::same(s.radius_lg),
-                stroke: Stroke::new(1.5_f32, c.accent()),
+                stroke: Stroke::new(2.0_f32, c.accent()),
                 inner_margin: Margin::same(sp.lg),
                 shadow: epaint::Shadow {
-                    offset: Vec2::new(0.0, 10.0),
-                    blur: 28.0,
-                    spread: 0.0,
-                    color: Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    offset: Vec2::new(0.0, 16.0),
+                    blur: 32.0,
+                    spread: 2.0,
+                    color: Color32::from_black_alpha(200),
                 },
                 ..Default::default()
             }.show(ui, |ui| {
@@ -3169,14 +3173,18 @@ fn render_conflict_dialog(
                 // Header
                 ui.horizontal(|ui| {
                     let title = if item.is_dir { "📁 Klasör Zaten Mevcut" } else { "⚠️ Dosya Zaten Mevcut" };
-                    ui.label(RichText::new(title).color(c.warning()).size(t.typography.size_base).strong());
+                    ui.label(RichText::new(title).color(c.warning()).size(t.typography.size_base + 1.0).strong());
 
                     if total > 1 {
                         ui.label(RichText::new(format!("({}/{})", current_num, total)).color(c.text_secondary()).size(t.typography.size_xs));
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if ui.add(
+                            egui::Button::new(RichText::new("✕").color(c.text_secondary()).size(t.typography.size_sm).strong())
+                                .fill(c.bg_surface1())
+                                .rounding(Rounding::same(s.radius_sm))
+                        ).clicked() {
                             cancel_clicked = true;
                         }
                     });
@@ -3193,7 +3201,7 @@ fn render_conflict_dialog(
 
                 // Comparison Box
                 egui::Frame {
-                    fill: c.bg_surface0(),
+                    fill: c.bg_surface1(),
                     rounding: Rounding::same(s.radius_md),
                     stroke: Stroke::new(1.0_f32, c.border()),
                     inner_margin: Margin::same(sp.md),
@@ -3248,40 +3256,63 @@ fn render_conflict_dialog(
 
                 // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.add(
-                        egui::Button::new(RichText::new("Üzerine Yaz").color(Color32::WHITE).size(t.typography.size_sm).strong())
-                            .fill(c.accent())
-                            .rounding(Rounding::same(s.radius_sm))
-                    ).on_hover_text("Mevcut dosyanın/klasörün üzerine yazar").clicked() {
+                    let btn_replace = egui::Button::new(
+                        RichText::new("Üzerine Yaz")
+                            .color(Color32::WHITE)
+                            .size(t.typography.size_sm)
+                            .strong()
+                    )
+                    .fill(c.accent())
+                    .rounding(Rounding::same(s.radius_sm));
+
+                    if ui.add(btn_replace).on_hover_text("Mevcut dosyanın/klasörün üzerine yazar").clicked() {
+                        eprintln!("[ConflictDialog] Üzerine Yaz seçildi!");
                         action_choice = Some(crate::state::ConflictChoice::Replace);
                     }
 
                     ui.add_space(sp.xs);
 
-                    if ui.add(
-                        egui::Button::new(RichText::new("Her İkisini Koru").color(c.text_primary()).size(t.typography.size_sm))
-                            .fill(c.bg_surface1())
-                            .rounding(Rounding::same(s.radius_sm))
-                    ).on_hover_text("Yeni dosyayı/klasörü (1), (2) şeklinde yeniden adlandırır").clicked() {
+                    let btn_keep_both = egui::Button::new(
+                        RichText::new("Her İkisini Koru")
+                            .color(c.text_primary())
+                            .size(t.typography.size_sm)
+                            .strong()
+                    )
+                    .fill(c.bg_surface1())
+                    .stroke(Stroke::new(1.0, c.border()))
+                    .rounding(Rounding::same(s.radius_sm));
+
+                    if ui.add(btn_keep_both).on_hover_text("Yeni dosyayı (1), (2) şeklinde kopyalar").clicked() {
+                        eprintln!("[ConflictDialog] Her İkisini Koru seçildi!");
                         action_choice = Some(crate::state::ConflictChoice::KeepBoth);
                     }
 
                     ui.add_space(sp.xs);
 
-                    if ui.add(
-                        egui::Button::new(RichText::new("Atla").color(c.text_secondary()).size(t.typography.size_sm))
-                            .fill(c.bg_surface0())
-                            .rounding(Rounding::same(s.radius_sm))
-                    ).on_hover_text("Bu öğeyi aktarmadan bir sonrakine geçer").clicked() {
+                    let btn_skip = egui::Button::new(
+                        RichText::new("Atla")
+                            .color(c.text_secondary())
+                            .size(t.typography.size_sm)
+                    )
+                    .fill(c.bg_surface1())
+                    .rounding(Rounding::same(s.radius_sm));
+
+                    if ui.add(btn_skip).on_hover_text("Bu öğeyi aktarmadan bir sonrakine geçer").clicked() {
+                        eprintln!("[ConflictDialog] Atla seçildi!");
                         action_choice = Some(crate::state::ConflictChoice::Skip);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(
-                            egui::Button::new(RichText::new("İptal").color(c.danger()).size(t.typography.size_sm))
-                                .fill(c.bg_surface0())
-                                .rounding(Rounding::same(s.radius_sm))
-                        ).clicked() {
+                        let btn_cancel = egui::Button::new(
+                            RichText::new("İptal")
+                                .color(c.danger())
+                                .size(t.typography.size_sm)
+                        )
+                        .fill(c.bg_surface1())
+                        .rounding(Rounding::same(s.radius_sm));
+
+                        if ui.add(btn_cancel).clicked() {
+                            eprintln!("[ConflictDialog] İptal seçildi!");
                             cancel_clicked = true;
                         }
                     });
@@ -3296,6 +3327,7 @@ fn render_conflict_dialog(
     }
 
     if cancel_clicked || ctx.input(|i| i.key_pressed(Key::Escape)) {
+        eprintln!("[ConflictDialog] Diyalog kapatıldı / iptal edildi.");
         state.cancel_conflict_dialog();
     } else if let Some(choice) = action_choice {
         state.resolve_current_conflict(choice);
