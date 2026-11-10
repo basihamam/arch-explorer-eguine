@@ -924,6 +924,26 @@ impl ArchExplorer {
                         let cur_existing: std::collections::HashSet<String> = self.state.dir.entries.iter().map(|e| e.path.clone()).collect();
                         self.state.selection.selected.retain(|p| cur_existing.contains(p));
 
+                        // Aktarılan dosyaların önizleme önbelleğini temizle (stale "Bulunamadı" hataları silinir)
+                        for p in &selected_paths {
+                            self.state.preview_cache.remove(p);
+                        }
+                        if let Some(ref loading) = self.state.preview_loading {
+                            if selected_paths.contains(loading) {
+                                self.state.preview_loading = None;
+                            }
+                        }
+
+                        // Sekmelerin önbelleklenmiş girdi listesini geçersiz kıl (her sekme taze disk listesini okusun)
+                        for tab in &mut self.state.tabs.tabs {
+                            tab.entries = None;
+                        }
+                        if let Some(ref mut right_pane) = self.state.right_pane {
+                            for tab in &mut right_pane.tabs.tabs {
+                                tab.entries = None;
+                            }
+                        }
+
                         let cur = self.state.nav.current_path.trim_end_matches('/');
                         let tgt = target_dir.trim_end_matches('/');
                         if cur == tgt && !selected_paths.is_empty() {
@@ -1230,7 +1250,7 @@ impl ArchExplorer {
 
             // Ctrl+C / Event::Copy — Copy
             let is_copy = (i.key_pressed(Key::C) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::C || *physical_key == Some(egui::Key::C))))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             if is_copy && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1243,7 +1263,7 @@ impl ArchExplorer {
 
             // Ctrl+X / Event::Cut — Cut
             let is_cut = (i.key_pressed(Key::X) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::X, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::X || *physical_key == Some(egui::Key::X))))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             if is_cut && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1263,7 +1283,7 @@ impl ArchExplorer {
                 }
             });
             let is_paste = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))))
                 || paste_event_text.is_some();
             if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let target_dir = self.state.active_context_path();
@@ -2884,6 +2904,25 @@ fn render_fullscreen_video(
 
 // ── File Conflict Dialog ──────────────────────────────────────────────────────
 
+fn aspect_fit_rect(target: egui::Rect, img_size: [usize; 2]) -> egui::Rect {
+    let [w, h] = img_size;
+    if w == 0 || h == 0 {
+        return target;
+    }
+    let aspect = w as f32 / h as f32;
+    let target_aspect = target.width() / target.height().max(1.0);
+    let (fit_w, fit_h) = if aspect > target_aspect {
+        let fw = target.width();
+        let fh = fw / aspect;
+        (fw, fh)
+    } else {
+        let fh = target.height();
+        let fw = fh * aspect;
+        (fw, fh)
+    };
+    egui::Rect::from_center_size(target.center(), egui::Vec2::new(fit_w, fit_h))
+}
+
 fn render_item_visual_badge(
     ui: &mut egui::Ui,
     t: &crate::theme::types::AexTheme,
@@ -2920,9 +2959,10 @@ fn render_item_visual_badge(
 
         if let Some(h) = handle {
             let tr = rect.shrink(3.0);
+            let img_rect = aspect_fit_rect(tr, h.size());
             ui.painter().image(
                 h.id(),
-                tr,
+                img_rect,
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -2959,21 +2999,20 @@ fn render_item_visual_badge(
                 ci,
                 TextureOptions::LINEAR,
             );
+            let tr = rect.shrink(3.0);
+            let img_rect = aspect_fit_rect(tr, h.size());
+            ui.painter().image(
+                h.id(),
+                img_rect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
             ui.ctx().data_mut(|d| {
                 d.insert_temp(thumb_id, h);
                 d.remove::<ColorImage>(Id::new(format!("traw_{}", cache_key)));
             });
             ui.ctx().request_repaint();
-            let tr = rect.shrink(3.0);
-            if let Some(h_loaded) = ui.ctx().data_mut(|d| d.get_temp::<TextureHandle>(thumb_id)) {
-                ui.painter().image(
-                    h_loaded.id(),
-                    tr,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-                return;
-            }
+            return;
         }
     }
 
@@ -3029,37 +3068,37 @@ fn render_conflict_dialog(
     let ph = 370.0_f32;
     let d_rect = Rect::from_center_size(screen.center(), Vec2::new(pw, ph));
 
-    // Backdrop — order Foreground and allocate full screen click sense to dim background and capture clicks
-    egui::Area::new(Id::new("conflict_dialog_backdrop"))
-        .fixed_pos(screen.min)
-        .order(Order::Foreground)
-        .show(ctx, |ui| {
-            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_rgba_unmultiplied(0, 0, 0, 160));
-            ui.allocate_rect(screen, Sense::click());
-        });
-
     let mut action_choice: Option<crate::state::ConflictChoice> = None;
     let mut cancel_clicked = false;
     let mut toggle_apply_all: Option<bool> = None;
 
-    egui::Area::new(Id::new("conflict_dialog_modal"))
-        .fixed_pos(d_rect.min)
-        .order(Order::Foreground)
+    egui::Area::new(Id::new("conflict_dialog_layer"))
+        .fixed_pos(screen.min)
+        .order(Order::Tooltip)
         .show(ctx, |ui| {
-            egui::Frame {
-                fill: c.bg_mantle(),
-                rounding: Rounding::same(s.radius_lg),
-                stroke: Stroke::new(1.0_f32, c.border()),
-                inner_margin: Margin::same(sp.lg),
-                shadow: epaint::Shadow {
-                    offset: Vec2::new(0.0, 10.0),
-                    blur: 28.0,
-                    spread: 0.0,
-                    color: Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-                },
-                ..Default::default()
-            }.show(ui, |ui| {
-                ui.set_width(pw - sp.lg * 2.0);
+            // Arka planı karart (Backdrop)
+            ui.painter().rect_filled(
+                screen,
+                Rounding::ZERO,
+                Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+            );
+
+            // Modal pencere doğrudan karartmanın ÜSTÜNE çizilir
+            let modal_resp = ui.allocate_ui_at_rect(d_rect, |ui| {
+                egui::Frame {
+                    fill: c.bg_mantle(),
+                    rounding: Rounding::same(s.radius_lg),
+                    stroke: Stroke::new(1.5_f32, c.accent()),
+                    inner_margin: Margin::same(sp.lg),
+                    shadow: epaint::Shadow {
+                        offset: Vec2::new(0.0, 10.0),
+                        blur: 28.0,
+                        spread: 0.0,
+                        color: Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    },
+                    ..Default::default()
+                }.show(ui, |ui| {
+                    ui.set_width(pw - sp.lg * 2.0);
 
                 // Header
                 ui.horizontal(|ui| {
@@ -3182,6 +3221,17 @@ fn render_conflict_dialog(
                     });
                 });
             });
+        });
+
+            // Modal pencerenin dışına tıklandığında iptal et
+            if ctx.input(|i| i.pointer.any_click()) {
+                let click_pos = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
+                if let Some(pos) = click_pos {
+                    if !modal_resp.response.rect.contains(pos) && !d_rect.contains(pos) {
+                        cancel_clicked = true;
+                    }
+                }
+            }
         });
 
     if let Some(val) = toggle_apply_all {

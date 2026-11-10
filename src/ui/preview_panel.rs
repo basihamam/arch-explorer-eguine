@@ -107,31 +107,44 @@ pub fn render(ui: &mut Ui, t: &AexTheme, state: &mut AppState, tx: &std::sync::m
                     match cached_res {
                         Ok(preview) => {
                             render_preview(ui, t, &path, &preview, state);
+                            return;
                         }
                         Err(e) => {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("PREVIEW")
-                                        .color(c.text_hint())
-                                        .size(t.typography.size_xs)
-                                        .strong()
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.small_button(icon(t, "close")).clicked() {
-                                        state.media_player.stop();
-                                        state.panels.close();
-                                    }
+                            // Eğer önbellekte hata varsa ama dosya diskte MEVCUT ise:
+                            // Bu eski/bayat bir hatadır (örneğin dosya taşınırken veya transfer tamamlanmadan
+                            // önce istendiğinde kaydedilmiş hata). Önbellekten temizle ve yeniden yükle!
+                            if std::path::Path::new(&path).exists() {
+                                state.preview_cache.remove(&path);
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("PREVIEW")
+                                            .color(c.text_hint())
+                                            .size(t.typography.size_xs)
+                                            .strong()
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.small_button(icon(t, "close")).clicked() {
+                                            state.media_player.stop();
+                                            state.panels.close();
+                                        }
+                                    });
                                 });
-                            });
-                            ui.add_space(sp.sm);
-                            ui.label(
-                                RichText::new(format!("{} {}", icon(t, "error"), e))
-                                    .color(c.danger())
-                                    .size(t.typography.size_sm),
-                            );
+                                ui.add_space(sp.sm);
+                                ui.label(
+                                    RichText::new(format!("{} {}", icon(t, "error"), e))
+                                        .color(c.danger())
+                                        .size(t.typography.size_sm),
+                                );
+                                ui.add_space(sp.sm);
+                                if ui.button("⟳ Tekrar Dene").clicked() {
+                                    state.preview_cache.remove(&path);
+                                    ui.ctx().request_repaint();
+                                }
+                                return;
+                            }
                         }
                     }
-                    return;
                 }
 
                 // 2. Yükleniyor durumu

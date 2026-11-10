@@ -1987,8 +1987,16 @@ impl AppState {
             let current_existing_paths: std::collections::HashSet<String> = self.dir.entries.iter().map(|e| e.path.clone()).collect();
             self.selection.selected.retain(|p| current_existing_paths.contains(p));
 
-            // Eğer önizleme önbelleğinde silinen dosyalar varsa temizle
-            self.preview_cache.retain(|p, _| std::path::Path::new(p).exists());
+            // Eğer önizleme önbelleğinde silinen dosyalar varsa veya hata kaydı olup artık diskte var olanlar varsa temizle
+            self.preview_cache.retain(|p, res| {
+                if !std::path::Path::new(p).exists() {
+                    false
+                } else if res.is_err() {
+                    false // Dosya artık diskte var, eski hatayı temizle ki bir dahaki seçimde yeniden yüklensin
+                } else {
+                    true
+                }
+            });
 
             if let Some(pending) = self.pending_select_paths.take() {
                 self.selection.select_many(&pending);

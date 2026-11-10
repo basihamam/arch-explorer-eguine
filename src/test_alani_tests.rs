@@ -120,10 +120,14 @@ mod tests {
     fn test_02_tek_dosya_ayni_klasore_paste_ve_hedefe_paste_cakisma_dialog() {
         use crate::state::{AppState, ConflictChoice};
 
-        let src_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/kaynak_klasor", TEST_ALANI);
-        let hedef_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/hedef_klasor", TEST_ALANI);
+        let temp_src = std::env::temp_dir().join(format!("ae_test_paste_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_src).unwrap();
+        let orig_test_file = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/kaynak_klasor/ayarlar.cfg", TEST_ALANI);
+        let test_file = temp_src.join("ayarlar.cfg").to_string_lossy().to_string();
+        std::fs::copy(&orig_test_file, &test_file).unwrap();
+        let src_dir = temp_src.to_string_lossy().to_string();
 
-        let test_file = format!("{}/ayarlar.cfg", src_dir);
+        let hedef_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/hedef_klasor", TEST_ALANI);
         assert!(Path::new(&test_file).exists());
 
         let mut state = AppState::new();
@@ -156,6 +160,8 @@ mod tests {
         // "Atla" (Skip) seçildiğinde dosya değiştirilmeden kapatılmalı
         state.resolve_current_conflict(ConflictChoice::Skip);
         assert!(state.conflict_dialog.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_src);
     }
 
     #[test]
@@ -378,5 +384,74 @@ mod tests {
             Some(TabBarAction::SwitchTab { tab_idx, .. }) => assert_eq!(tab_idx, 1),
             _ => panic!("Expected SwitchTab action"),
         }
+    }
+
+    #[test]
+    fn test_10_drag_drop_sonrasi_onizleme_bulunamadi_hatasi_duzeltildi() {
+        use crate::state::AppState;
+        use crate::theme::types::AexTheme;
+
+        let temp_dir = std::env::temp_dir().join(format!("ae_preview_test_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let image_file = temp_dir.join("yeni_resim.png");
+        let image_str = image_file.to_string_lossy().to_string();
+
+        let mut state = AppState::new();
+        state.selection.select_only(image_str.clone());
+
+        // 1. Simülasyon: Dosya henüz taşınırken veya transfer bitmeden önizleme istendi ve "Bulunamadı" hatası önbelleğe yazıldı
+        state.preview_cache.insert(
+            image_str.clone(),
+            Err(format!("Bulunamadı: {}", image_str)),
+        );
+        assert!(state.preview_cache.contains_key(&image_str));
+        assert!(state.preview_cache.get(&image_str).unwrap().is_err());
+
+        // 2. Şimdi dosya diske transfer edildi / yazıldı
+        // 1x1 geçerli bir PNG baytı yazalım
+        let dummy_png = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&image_file, &dummy_png).unwrap();
+        assert!(image_file.exists());
+
+        // 3. UI preview panel render edildiğinde:
+        // Eğer önbellekte Err varsa ama dosya artık diskte mevcutsa, stale Err silinmeli ve arka plan yüklemesi tetiklenmelidir!
+        let ctx = egui::Context::default();
+        let t = AexTheme::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::ui::preview_panel::render(ui, &t, &mut state, &tx);
+            });
+        });
+
+        // preview_cache'teki bayat Err silinmiş olmalı ve preview_loading başlatılmış olmalı!
+        assert!(!state.preview_cache.contains_key(&image_str), "Dosya diskte mevcut olduğu için bayat Err önbellekten silinmiş olmalı");
+        assert_eq!(state.preview_loading.as_deref(), Some(image_str.as_str()), "Yeniden yükleme için preview_loading başlatılmış olmalı");
+
+        // 4. Arka plan thread'inden gelen BackendMsg::PreviewLoaded mesajını simüle et veya al
+        if let Ok(crate::app::BackendMsg::PreviewLoaded { path, result }) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            assert_eq!(path, image_str);
+            assert!(result.is_ok(), "Dosya diskte mevcut olduğu için önizleme başarılı olmalı");
+            state.preview_cache.insert(path, result);
+        }
+
+        // 5. İkinci render: Artık önizleme başarılı olarak gösterilir, asla "Bulunamadı" hatası kalmaz!
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::ui::preview_panel::render(ui, &t, &mut state, &tx);
+            });
+        });
+        assert!(state.preview_cache.get(&image_str).unwrap().is_ok());
+
+        // Temizlik
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
