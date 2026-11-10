@@ -1087,11 +1087,13 @@ impl eframe::App for ArchExplorer {
         // 6. Klavye kısayolları
         self.handle_shortcuts(ctx);
 
-        // Drag cleanup: Eğer sürükleme aktif görünüyorsa ama sol fare tuşu basılı değilse (dışarıda bırakılmış veya iptal edilmişse),
-        // sürükleme durumunu derhal sıfırla!
+        // Drag cleanup: Eğer sürükleme aktif görünüyorsa ama sol fare tuşu basılı değilse VE drop anında değilsek
+        // (örneğin pencere dışına sürüklenip orada bırakılmış veya pencere odağı kaybolmuşsa), sürüklemeyi derhal sıfırla!
+        // DROP ANINDA (any_released == true) İSE İPTAL ETME! Bırak render_ui (tab_bar, file_grid vb.) drop olayını işlesin!
         if self.state.drag.dragging {
             let is_mouse_down = ctx.input(|i| i.pointer.primary_down() || i.pointer.button_down(egui::PointerButton::Primary) || i.pointer.any_down());
-            if !is_mouse_down {
+            let any_released = ctx.input(|i| i.pointer.any_released());
+            if !is_mouse_down && !any_released {
                 self.state.drag.cancel();
             }
         }
@@ -1228,6 +1230,7 @@ impl ArchExplorer {
 
             // Ctrl+C / Event::Copy — Copy
             let is_copy = (i.key_pressed(Key::C) && (i.modifiers.ctrl || i.modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             if is_copy && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1240,6 +1243,7 @@ impl ArchExplorer {
 
             // Ctrl+X / Event::Cut — Cut
             let is_cut = (i.key_pressed(Key::X) && (i.modifiers.ctrl || i.modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::X, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
                 || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             if is_cut && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
@@ -1259,6 +1263,7 @@ impl ArchExplorer {
                 }
             });
             let is_paste = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. } if modifiers.ctrl || modifiers.command))
                 || paste_event_text.is_some();
             if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let target_dir = self.state.active_context_path();

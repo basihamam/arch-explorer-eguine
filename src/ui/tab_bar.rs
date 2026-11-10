@@ -246,8 +246,11 @@ pub fn render_tab_half(
     let n = tabs.len();
     let active_idx = tabs.active_idx;
 
-    let is_dragging = ui.ctx().data_mut(|d| d.get_temp::<bool>(Id::new("is_file_dragging")).unwrap_or(false));
     let drag_sources: Vec<String> = ui.ctx().data_mut(|d| d.get_temp(Id::new("drag_sources")).unwrap_or_default());
+    let is_dragging = ui.ctx().data_mut(|d| d.get_temp::<bool>(Id::new("is_file_dragging")).unwrap_or(false)) || !drag_sources.is_empty();
+    if !is_dragging {
+        ui.ctx().data_mut(|d| d.remove_temp::<(bool, usize, f64)>(Id::new("spring_loaded_tab_hover")));
+    }
     let folder_sources: Vec<String> = if is_dragging {
         drag_sources.into_iter().filter(|s| {
             let p = std::path::Path::new(s);
@@ -313,6 +316,29 @@ pub fn render_tab_half(
             // Drop release on tab
             if is_dragging && is_pointer_in_tab && ui.input(|i| i.pointer.any_released()) && action.is_none() {
                 *action = Some(TabBarAction::DropFiles { dest_path: tab.path.clone() });
+                ui.ctx().data_mut(|d| d.remove_temp::<(bool, usize, f64)>(Id::new("spring_loaded_tab_hover")));
+            } else if is_drag_over && !(is_active_tab && is_pane_active) {
+                // Spring-loaded tab switch (~400ms hover)
+                let current_time = ui.input(|i| i.time);
+                let spring_id = Id::new("spring_loaded_tab_hover");
+                let prev_hover = ui.ctx().data_mut(|d| d.get_temp::<(bool, usize, f64)>(spring_id));
+                match prev_hover {
+                    Some((h_left, h_idx, start_time)) if h_left == is_left && h_idx == i => {
+                        let elapsed = current_time - start_time;
+                        if elapsed >= 0.400 && action.is_none() {
+                            *action = Some(TabBarAction::SwitchTab { pane_is_left: is_left, tab_idx: i });
+                            ui.ctx().data_mut(|d| d.remove_temp::<(bool, usize, f64)>(spring_id));
+                            ui.ctx().request_repaint();
+                        } else if elapsed < 0.400 {
+                            let remaining = ((0.400 - elapsed) * 1000.0).max(10.0) as u64;
+                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(remaining));
+                        }
+                    }
+                    _ => {
+                        ui.ctx().data_mut(|d| d.insert_temp(spring_id, (is_left, i, current_time)));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+                    }
+                }
             }
 
             // 2. Bottom accent line (Only active tab in active pane has the 2px accent underline!)
@@ -524,6 +550,10 @@ pub fn render_tab_half(
 
 // ── Legacy / compatibility helpers for tests ──────────────────────────────────
 pub fn render_pane(ui: &mut Ui, t: &AexTheme, state: &mut AppState, is_left: bool, pane_is_active: bool) {
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(Id::new("is_file_dragging"), state.drag.dragging);
+        d.insert_temp(Id::new("drag_sources"), state.drag.sources.clone());
+    });
     let half_w = ui.available_width();
     let tab_h = ui.available_height().max(32.0);
     let mut action = None;

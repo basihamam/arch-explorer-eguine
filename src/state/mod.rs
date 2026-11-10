@@ -2226,7 +2226,7 @@ impl AppState {
     }
 
     pub fn drop_files_into_dir(&mut self, dest_dir: String) {
-        if !self.drag.dragging || self.drag.sources.is_empty() {
+        if self.drag.sources.is_empty() {
             return;
         }
         let sources = self.drag.sources.clone();
@@ -2286,40 +2286,14 @@ impl AppState {
                 _ => false,
             });
 
-            if is_same_file {
-                if is_drag || !copy {
-                    continue; // Sürükle-bırak ile aynı klasöre bırakma veya taşıma kesinlikle no-op
-                }
-                // Aynı dizinde kopyalama (Paste / Duplicate): Çakışma penceresi açma! Otomatik "dosya (2).ext" oluştur
-                let mut unique_dst = crate::backend::fs_ops::resolve_name_conflict(
-                    std::path::Path::new(&dest_dir),
-                    &fname,
-                );
-                let p = std::path::Path::new(&fname);
-                let is_dir = src_path.is_dir();
-                let (stem, ext) = if is_dir {
-                    (fname.clone(), String::new())
-                } else {
-                    let stem = p.file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| fname.clone());
-                    let ext = p.extension()
-                        .map(|e| format!(".{}", e.to_string_lossy()))
-                        .unwrap_or_default();
-                    (stem, ext)
-                };
-                let mut counter = 2;
-                while direct_targets.contains(&unique_dst.to_string_lossy().to_string()) {
-                    counter += 1;
-                    unique_dst = std::path::Path::new(&dest_dir).join(format!("{} ({}){}", stem, counter, ext));
-                }
-
-                direct_sources.push(src.clone());
-                direct_targets.push(unique_dst.to_string_lossy().to_string());
+            // Sürükle-bırak ile aynı klasöre geri bırakma kesinlikle no-op (dosya çoğaltılmaz, pencere açılmaz)
+            if is_same_file && is_drag {
                 continue;
             }
 
-            if dst_path.exists() {
+            // Eğer hedef dosya zaten varsa (veya Paste ile aynı dosyaya yapıştırılıyorsa)
+            // ASLA sessizce (2) yapma! Mutlaka çakışma penceresi aç ve kullanıcıya sor!
+            if dst_path.exists() || is_same_file {
                 let (src_sz, src_mod, is_dir) = get_file_summary(src);
                 let (dst_sz, dst_mod, _) = get_file_summary(&dst);
                 conflicts.push(ConflictItem {
@@ -3208,38 +3182,32 @@ mod tests {
         let dest_dir_str = temp_dir.to_string_lossy().to_string();
 
         // 1. Drag & drop file into its own folder (move / !copy): must be NO-OP!
-        state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), false);
+        state.start_transfer_drag(vec![src_str.clone()], dest_dir_str.clone(), false);
         assert!(state.conflict_dialog.is_none(), "Drop into own folder must NOT open conflict dialog");
         assert!(state.pending_transfer.is_none(), "Drop into own folder must NOT perform transfer");
 
-        // 2. First copy in same dir: should NOT open conflict dialog!
+        // 2. Drag & drop file into its own folder (copy): must ALSO be NO-OP!
+        state.start_transfer_drag(vec![src_str.clone()], dest_dir_str.clone(), true);
+        assert!(state.conflict_dialog.is_none(), "Drop into own folder (copy) must NOT open conflict dialog");
+        assert!(state.pending_transfer.is_none(), "Drop into own folder (copy) must NOT perform transfer");
+
+        // 3. Paste in same dir (!is_drag): MUST open conflict dialog and ask user!
         state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
-        assert!(state.conflict_dialog.is_none(), "Conflict dialog must NOT open for same dir copy");
-        assert!(state.pending_transfer.is_some());
+        assert!(state.conflict_dialog.is_some(), "Paste into same dir MUST open conflict dialog");
+        assert!(state.pending_transfer.is_none(), "Pending transfer must be none until conflict is resolved");
 
-        let req = state.pending_transfer.take().unwrap();
-        assert_eq!(req.sources, vec![src_str.clone()]);
-        assert_eq!(req.dest_dir, dest_dir_str);
-        assert!(req.copy);
-        assert!(req.target_paths.is_some());
-        let targets = req.target_paths.unwrap();
-        assert_eq!(targets.len(), 1);
+        // Resolve conflict with KeepBoth -> generates "document (2).txt"
+        state.resolve_current_conflict(ConflictChoice::KeepBoth);
         let expected_copy1 = temp_dir.join("document (2).txt").to_string_lossy().to_string();
-        assert_eq!(targets[0], expected_copy1);
-
-        // Execute transfer of first copy
-        let res = execute_transfer_item(&req.sources[0], &targets[0], true, ConflictChoice::Replace);
-        assert!(res.is_ok());
         assert!(std::path::Path::new(&expected_copy1).exists());
         assert_eq!(std::fs::read_to_string(&expected_copy1).unwrap(), "hello same dir copy");
 
-        // 3. Second copy in same dir: should produce "document (3).txt"
+        // 4. Second paste in same dir: conflict dialog opens again, KeepBoth produces "document (3).txt"
         state.start_transfer(vec![src_str.clone()], dest_dir_str.clone(), true);
-        assert!(state.conflict_dialog.is_none());
-        let req2 = state.pending_transfer.take().unwrap();
-        let targets2 = req2.target_paths.unwrap();
+        assert!(state.conflict_dialog.is_some(), "Second paste into same dir MUST open conflict dialog");
+        state.resolve_current_conflict(ConflictChoice::KeepBoth);
         let expected_copy2 = temp_dir.join("document (3).txt").to_string_lossy().to_string();
-        assert_eq!(targets2[0], expected_copy2);
+        assert!(std::path::Path::new(&expected_copy2).exists());
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);

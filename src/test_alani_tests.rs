@@ -117,6 +117,48 @@ mod tests {
     }
 
     #[test]
+    fn test_02_tek_dosya_ayni_klasore_paste_ve_hedefe_paste_cakisma_dialog() {
+        use crate::state::{AppState, ConflictChoice};
+
+        let src_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/kaynak_klasor", TEST_ALANI);
+        let hedef_dir = format!("{}/02_Cakisma_ve_Uzerine_Yazma_Testi/hedef_klasor", TEST_ALANI);
+
+        let test_file = format!("{}/ayarlar.cfg", src_dir);
+        assert!(Path::new(&test_file).exists());
+
+        let mut state = AppState::new();
+
+        // 1. Tek dosya aynı klasöre kopyalanıp yapıştırıldığında (Ctrl+C / Ctrl+V):
+        // ASLA sessizce (2) oluşturulmamalı, MUTLAKA çakışma penceresi (conflict_dialog) açılmalıdır!
+        state.start_transfer(vec![test_file.clone()], src_dir.clone(), true);
+        assert!(state.conflict_dialog.is_some(), "Tek bir dosya aynı klasöre yapıştırıldığında kullanıcıya sormak için çakışma penceresi açılmalıdır!");
+        assert!(state.pending_transfer.is_none());
+
+        let diag = state.conflict_dialog.as_ref().unwrap();
+        assert_eq!(diag.queue.len(), 1, "Çakışma kuyruğunda tek dosya olmalı");
+        assert_eq!(diag.queue[0].src_path, test_file);
+
+        // Kullanıcı "Her İkisini Koru" (Keep Both) derse kopya o zaman üretilmeli:
+        state.resolve_current_conflict(ConflictChoice::KeepBoth);
+        assert!(state.conflict_dialog.is_none());
+
+        // Üretilen kopyanın varlığını doğrula ve temizle
+        let possible_copy = format!("{}/ayarlar (2).cfg", src_dir);
+        if Path::new(&possible_copy).exists() {
+            let _ = std::fs::remove_file(&possible_copy);
+        }
+
+        // 2. Tek dosya hedef_klasor'e yapıştırıldığında da çakışma penceresi açılmalı:
+        state.start_transfer(vec![test_file.clone()], hedef_dir.clone(), true);
+        assert!(state.conflict_dialog.is_some(), "Hedefte aynı isimde dosya varken yapıştırıldığında çakışma penceresi açılmalıdır!");
+        assert_eq!(state.conflict_dialog.as_ref().unwrap().queue.len(), 1);
+
+        // "Atla" (Skip) seçildiğinde dosya değiştirilmeden kapatılmalı
+        state.resolve_current_conflict(ConflictChoice::Skip);
+        assert!(state.conflict_dialog.is_none());
+    }
+
+    #[test]
     fn test_03_metin_kod_ve_veri_dosyalari_syntax_ve_gizli() {
         let code_p = format!("{}/03_Metin_Kod_ve_Veri_Dosyalari/ornek_kod.rs", TEST_ALANI);
         let prev = crate::backend::preview::get_file_preview(code_p).expect("Rust preview failed");
@@ -185,5 +227,156 @@ mod tests {
         let meta = std::fs::metadata(&readonly_p).unwrap();
         let formatted = crate::backend::fs_ops::format_permissions(&meta);
         assert!(formatted.starts_with("-r--") || formatted.starts_with("-r-"), "File permissions should reflect read-only mode: {}", formatted);
+    }
+
+    #[test]
+    fn test_08_tab_bar_drop_files_onto_other_tab_header() {
+        use crate::state::AppState;
+        use crate::ui::tab_bar::{render_tab_half, apply_tab_action, TabBarAction};
+        use crate::theme::types::AexTheme;
+
+        // 1. İki farklı klasör ve aktarılacak dosya hazırla
+        let base_temp = std::env::temp_dir().join(format!("ae_tab_drop_test_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let dir_tab1 = base_temp.join("kaynak_tab");
+        let dir_tab2 = base_temp.join("hedef_tab");
+        std::fs::create_dir_all(&dir_tab1).unwrap();
+        std::fs::create_dir_all(&dir_tab2).unwrap();
+
+        let src_file = dir_tab1.join("rapor.txt");
+        std::fs::write(&src_file, "Gizli proje raporu 2026").unwrap();
+        assert!(src_file.exists());
+
+        // 2. AppState başlat ve sekmeleri ayarla
+        let mut state = AppState::new();
+        state.nav.current_path = dir_tab1.to_string_lossy().to_string();
+        state.tabs.tabs[0].path = dir_tab1.to_string_lossy().to_string();
+        state.tabs.tabs[0].label = "Kaynak".to_string();
+
+        // İkinci sekmeyi aç (hedef sekme)
+        state.open_in_new_tab(dir_tab2.to_string_lossy().to_string());
+        state.tabs.tabs[1].label = "Hedef".to_string();
+        // Aktif sekme: Kaynak (0. sekme)
+        state.switch_tab(0);
+        assert_eq!(state.tabs.active_idx, 0);
+        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs.tabs[0].path, dir_tab1.to_string_lossy().to_string());
+        assert_eq!(state.tabs.tabs[1].path, dir_tab2.to_string_lossy().to_string());
+
+        // 3. Dosyayı sürüklemeye başla
+        let src_str = src_file.to_string_lossy().to_string();
+        state.drag.start(vec![src_str.clone()], false);
+        assert!(state.drag.dragging, "Sürükleme aktif olmalı");
+        assert_eq!(state.drag.sources, vec![src_str.clone()]);
+
+        // 4. UI bağlamı ile Hedef sekme (Tab 1) üzerine bırakmayı (drop) simüle et
+        let ctx = egui::Context::default();
+        let t = AexTheme::default();
+
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("is_file_dragging"), true);
+            d.insert_temp(egui::Id::new("drag_sources"), vec![src_str.clone()]);
+        });
+
+        // Hedef sekme (Tab 1) üzerine denk gelecek imleç pozisyonu (Tab 0 ~100px, Tab 1 ~150px)
+        let mut raw_input = egui::RawInput::default();
+        raw_input.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 17.0)));
+        raw_input.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(150.0, 17.0),
+            button: egui::PointerButton::Primary,
+            pressed: false, // Release (bırakma anı)
+            modifiers: egui::Modifiers::default(),
+        });
+
+        let mut captured_action: Option<TabBarAction> = None;
+        let _ = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_tab_half(ui, &t, &state.tabs, true, true, 400.0, 34.0, &mut captured_action);
+            });
+        });
+
+        // Eylemin TabBarAction::DropFiles ve dest_path'in dir_tab2 olduğunu doğrula
+        assert!(captured_action.is_some(), "Sekme üzerine bırakıldığında DropFiles eylemi tetiklenmeli");
+        let dest_path = match &captured_action {
+            Some(TabBarAction::DropFiles { dest_path }) => dest_path.clone(),
+            _ => panic!("Beklenen TabBarAction::DropFiles"),
+        };
+        assert_eq!(dest_path, dir_tab2.to_string_lossy().to_string());
+
+        // 5. Eylemi state'e uygula (apply_tab_action)
+        apply_tab_action(&mut state, captured_action.unwrap());
+
+        // Sürüklemenin tamamlandığını ve transfer isteğinin oluştuğunu doğrula
+        assert!(!state.drag.dragging, "Drop sonrasında sürükleme temizlenmeli");
+        assert!(state.pending_transfer.is_some(), "Başka sekmeye bırakıldığında pending_transfer oluşturulmalı");
+
+        let req = state.pending_transfer.take().unwrap();
+        assert_eq!(req.dest_dir, dir_tab2.to_string_lossy().to_string());
+        assert_eq!(req.sources, vec![src_str.clone()]);
+
+        // 6. Transferi gerçekleştir (arka plan iş parçacığı simülasyonu)
+        let expected_dest_file = dir_tab2.join("rapor.txt");
+        let res = crate::state::execute_transfer_item(&req.sources[0], &expected_dest_file.to_string_lossy(), req.copy, crate::state::ConflictChoice::Replace);
+        assert!(res.is_ok(), "Transfer başarıyla tamamlanmalı");
+
+        // Hedef klasörde dosyanın başarıyla oluştuğunu ve içeriğini doğrula
+        assert!(expected_dest_file.exists(), "Dosya hedef sekmenin klasörüne aktarılmış olmalı");
+        assert_eq!(std::fs::read_to_string(&expected_dest_file).unwrap(), "Gizli proje raporu 2026");
+
+        // Taşıma işlemi olduğundan kaynak dosyanın silindiğini doğrula
+        assert!(!src_file.exists(), "Taşıma sonrasında kaynak dosya silinmiş olmalı");
+
+        // Temizlik
+        let _ = std::fs::remove_dir_all(&base_temp);
+    }
+
+    #[test]
+    fn test_09_spring_loaded_tab_switch_on_hover() {
+        use crate::state::AppState;
+        use crate::ui::tab_bar::{render_tab_half, TabBarAction};
+        use crate::theme::types::AexTheme;
+
+        let mut state = AppState::new();
+        state.tabs.new_tab("/home/cikti/tab2".to_string());
+        state.switch_tab(0);
+        assert_eq!(state.tabs.active_idx, 0);
+
+        let ctx = egui::Context::default();
+        let t = AexTheme::default();
+
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("is_file_dragging"), true);
+            d.insert_temp(egui::Id::new("drag_sources"), vec!["/tmp/test.txt".to_string()]);
+        });
+
+        // 1. Frame 1: Pointer moves over Tab 1 (x=150.0, y=17.0) at t=1.0s (not yet 400ms)
+        let mut raw1 = egui::RawInput::default();
+        raw1.time = Some(1.0);
+        raw1.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 17.0)));
+
+        let mut action1: Option<TabBarAction> = None;
+        let _ = ctx.run(raw1, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_tab_half(ui, &t, &state.tabs, true, true, 400.0, 34.0, &mut action1);
+            });
+        });
+        assert!(action1.is_none(), "Under 400ms hover must NOT trigger switch");
+
+        // 2. Frame 2: Pointer remains over Tab 1 at t=1.45s (elapsed 450ms > 400ms)
+        let mut raw2 = egui::RawInput::default();
+        raw2.time = Some(1.45);
+        raw2.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 17.0)));
+
+        let mut action2: Option<TabBarAction> = None;
+        let _ = ctx.run(raw2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_tab_half(ui, &t, &state.tabs, true, true, 400.0, 34.0, &mut action2);
+            });
+        });
+
+        assert!(action2.is_some(), "Hovering > 400ms must trigger spring-loaded switch");
+        match action2 {
+            Some(TabBarAction::SwitchTab { tab_idx, .. }) => assert_eq!(tab_idx, 1),
+            _ => panic!("Expected SwitchTab action"),
+        }
     }
 }
