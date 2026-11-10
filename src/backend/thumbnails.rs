@@ -38,7 +38,7 @@ fn thumb_path(src: &Path, quality: ThumbQuality) -> PathBuf {
     let mut h = DefaultHasher::new();
     src.hash(&mut h);
     let hash = h.finish();
-    cache_dir().join(format!("{:x}_{}.jpg", hash, quality.suffix()))
+    cache_dir().join(format!("v2_{:x}_{}.jpg", hash, quality.suffix()))
 }
 
 fn src_mtime(path: &Path) -> Option<SystemTime> {
@@ -224,10 +224,10 @@ fn generate_gif_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<V
 
 fn generate_svg_thumb(src: &Path, dst: &Path, quality: ThumbQuality) -> Option<Vec<u8>> {
     let px = quality.px();
-    // rsvg-convert dene (librsvg)
+    // rsvg-convert dene (librsvg) — -a flag preserves aspect ratio
     let tmp = dst.with_extension("_tmp.png");
     let ok = std::process::Command::new("rsvg-convert")
-        .args(["-w", &px.to_string(), "-h", &px.to_string(),
+        .args(["-a", "-w", &px.to_string(), "-h", &px.to_string(),
                "-o", tmp.to_str()?, src.to_str()?])
         .status().ok()?.success();
 

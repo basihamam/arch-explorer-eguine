@@ -159,11 +159,6 @@ pub fn copy_to_system_clipboard_async(text: String) {
                 }
             }
         }
-
-        // 3. Fallback: arboard (arka plan iş parçacığında olduğu için UI donmaz)
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(text);
-        }
     });
 }
 
@@ -234,11 +229,6 @@ pub fn copy_files_to_system_clipboard_async(paths: Vec<String>, is_cut: bool) {
                     }
                     child.wait()
                 });
-        }
-
-        // 3. Arboard ile metin kopyala (arka planda çalışır, UI asla etkilenmez)
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(plain_text);
         }
     });
 }

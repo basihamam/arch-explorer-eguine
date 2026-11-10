@@ -620,12 +620,16 @@ impl ArchExplorer {
 
                 match crate::state::execute_transfer_item(src, &dst, req.copy, crate::state::ConflictChoice::Replace) {
                     Ok(Some(action)) => {
+                        eprintln!("[Transfer] Başarılı: {} -> {}", src, dst);
                         action.collect_targets(&mut created_paths);
                         undos.push(action);
                         direct_count += 1;
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        eprintln!("[Transfer] Atlandı (Skip / aynı dosya): {} -> {}", src, dst);
+                    }
                     Err(e) => {
+                        eprintln!("[Transfer] HATA: {} -> {}, hata: {}", src, dst, e);
                         err_msg = e;
                     }
                 }
@@ -637,6 +641,7 @@ impl ArchExplorer {
 
             if direct_count > 0 {
                 let msg = format!("{} öğe {} içine {}", direct_count, req.dest_dir, if req.copy { "kopyalandı" } else { "taşındı" });
+                eprintln!("[TransferDone] Aktarım tamamlandı: {}", msg);
                 tx.send(BackendMsg::TransferDone {
                     success: true,
                     message: msg,
@@ -645,6 +650,7 @@ impl ArchExplorer {
                 }).ok();
             } else {
                 let msg = if err_msg.is_empty() { "İşlem tamamlanamadı".to_string() } else { format!("Hata: {}", err_msg) };
+                eprintln!("[TransferDone] Aktarım başarısız: {}", msg);
                 tx.send(BackendMsg::TransferDone {
                     success: false,
                     message: msg,
@@ -704,9 +710,8 @@ impl ArchExplorer {
 
                     if matches_current {
                         self.state.pending_listing = Some(listing);
-                    } else if self.state.needs_reload {
-                        self.state.dir.is_loading = false;
                     }
+                    self.state.dir.is_loading = false;
                 }
                 BackendMsg::DirectoryError(e) => {
                     self.state.dir.is_loading = false;
@@ -930,6 +935,7 @@ impl ArchExplorer {
                     self.state.notify.update_progress(&id, message, progress);
                 }
                 BackendMsg::TransferDone { success, message, target_dir, selected_paths } => {
+                    eprintln!("[TransferDone Msg] success: {}, msg: {}, target: {}, selected: {:?}", success, message, target_dir, selected_paths);
                     self.state.notify.finish_progress("file_transfer", message, success);
                     if success {
                         // Taşınan/kesilen veya kopyalanan dosyaların eski seçim izlerini temizle
@@ -962,7 +968,9 @@ impl ArchExplorer {
                             self.state.select_paths_and_queue(selected_paths);
                         }
                     }
+                    self.state.dir.is_loading = false;
                     self.state.refresh();
+                    self.load_current_directory();
                 }
             }
         }
@@ -2958,14 +2966,14 @@ fn aspect_fit_rect(target: egui::Rect, img_size: [usize; 2]) -> egui::Rect {
     let target_aspect = target.width() / target.height().max(1.0);
     let (fit_w, fit_h) = if aspect > target_aspect {
         let fw = target.width();
-        let fh = fw / aspect;
+        let fh = (fw / aspect).round();
         (fw, fh)
     } else {
         let fh = target.height();
-        let fw = fh * aspect;
+        let fw = (fh * aspect).round();
         (fw, fh)
     };
-    egui::Rect::from_center_size(target.center(), egui::Vec2::new(fit_w, fit_h))
+    egui::Rect::from_center_size(target.center(), egui::Vec2::new(fit_w.max(1.0), fit_h.max(1.0)))
 }
 
 fn render_item_visual_badge(
@@ -3005,12 +3013,14 @@ fn render_item_visual_badge(
         if let Some(h) = handle {
             let tr = rect.shrink(3.0);
             let img_rect = aspect_fit_rect(tr, h.size());
+            ui.painter().rect_filled(tr, Rounding::same(s.radius_sm), Color32::from_black_alpha(25));
             ui.painter().image(
                 h.id(),
                 img_rect,
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
+            ui.painter().rect_stroke(img_rect, Rounding::same(2.0), Stroke::new(1.0, Color32::from_white_alpha(30)));
             return;
         }
 
@@ -3046,12 +3056,14 @@ fn render_item_visual_badge(
             );
             let tr = rect.shrink(3.0);
             let img_rect = aspect_fit_rect(tr, h.size());
+            ui.painter().rect_filled(tr, Rounding::same(s.radius_sm), Color32::from_black_alpha(25));
             ui.painter().image(
                 h.id(),
                 img_rect,
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
+            ui.painter().rect_stroke(img_rect, Rounding::same(2.0), Stroke::new(1.0, Color32::from_white_alpha(30)));
             ui.ctx().data_mut(|d| {
                 d.insert_temp(thumb_id, h);
                 d.remove::<ColorImage>(Id::new(format!("traw_{}", cache_key)));
@@ -3109,41 +3121,50 @@ fn render_conflict_dialog(
         .unwrap_or_else(|| item.dest_path.clone());
 
     let screen = ctx.screen_rect();
-    let pw = 560.0_f32;
-    let ph = 370.0_f32;
+    let pw = 580.0_f32;
+    let ph = 410.0_f32;
     let d_rect = Rect::from_center_size(screen.center(), Vec2::new(pw, ph));
 
     let mut action_choice: Option<crate::state::ConflictChoice> = None;
     let mut cancel_clicked = false;
     let mut toggle_apply_all: Option<bool> = None;
 
-    egui::Area::new(Id::new("conflict_dialog_layer"))
+    // 1. Arka Planı Karart (Backdrop) — Order::Middle katmanında, tüm tıklamaları yakalar
+    egui::Area::new(Id::new("conflict_dialog_backdrop"))
         .fixed_pos(screen.min)
-        .order(Order::Tooltip)
+        .order(Order::Middle)
         .show(ctx, |ui| {
-            // Arka planı karart (Backdrop)
             ui.painter().rect_filled(
                 screen,
                 Rounding::ZERO,
                 Color32::from_rgba_unmultiplied(0, 0, 0, 160),
             );
+            let r = ui.allocate_rect(screen, Sense::click());
+            let click_pos = ctx.input(|i| i.pointer.interact_pos());
+            if r.clicked() && click_pos.map(|p| !d_rect.contains(p)).unwrap_or(false) {
+                cancel_clicked = true;
+            }
+        });
 
-            // Modal pencere doğrudan karartmanın ÜSTÜNE çizilir
-            let modal_resp = ui.allocate_ui_at_rect(d_rect, |ui| {
-                egui::Frame {
-                    fill: c.bg_mantle(),
-                    rounding: Rounding::same(s.radius_lg),
-                    stroke: Stroke::new(1.5_f32, c.accent()),
-                    inner_margin: Margin::same(sp.lg),
-                    shadow: epaint::Shadow {
-                        offset: Vec2::new(0.0, 10.0),
-                        blur: 28.0,
-                        spread: 0.0,
-                        color: Color32::from_rgba_unmultiplied(0, 0, 0, 160),
-                    },
-                    ..Default::default()
-                }.show(ui, |ui| {
-                    ui.set_width(pw - sp.lg * 2.0);
+    // 2. Modal Pencere — Order::Foreground katmanında, karartmanın KESİNLİKLE ÜSTÜNDEDİR!
+    egui::Area::new(Id::new("conflict_dialog_modal"))
+        .fixed_pos(d_rect.min)
+        .order(Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame {
+                fill: c.bg_mantle(),
+                rounding: Rounding::same(s.radius_lg),
+                stroke: Stroke::new(1.5_f32, c.accent()),
+                inner_margin: Margin::same(sp.lg),
+                shadow: epaint::Shadow {
+                    offset: Vec2::new(0.0, 10.0),
+                    blur: 28.0,
+                    spread: 0.0,
+                    color: Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                },
+                ..Default::default()
+            }.show(ui, |ui| {
+                ui.set_width(pw - sp.lg * 2.0);
 
                 // Header
                 ui.horizontal(|ui| {
@@ -3184,7 +3205,7 @@ fn render_conflict_dialog(
                             ui.label(RichText::new("Kaynak (Aktarılan):").strong().color(c.accent()).size(t.typography.size_xs));
                             ui.add_space(sp.xs);
                             ui.horizontal(|ui| {
-                                render_item_visual_badge(ui, t, &item.src_path, item.is_dir, 48.0);
+                                render_item_visual_badge(ui, t, &item.src_path, item.is_dir, 64.0);
                                 ui.vertical(|ui| {
                                     if !item.is_dir {
                                         ui.label(RichText::new(format!("Boyut: {}", crate::ui::human_size(item.src_size))).color(c.text_secondary()).size(t.typography.size_xs));
@@ -3201,7 +3222,7 @@ fn render_conflict_dialog(
                             ui.label(RichText::new("Hedef (Mevcut Olan):").strong().color(c.text_primary()).size(t.typography.size_xs));
                             ui.add_space(sp.xs);
                             ui.horizontal(|ui| {
-                                render_item_visual_badge(ui, t, &item.dest_path, item.is_dir, 48.0);
+                                render_item_visual_badge(ui, t, &item.dest_path, item.is_dir, 64.0);
                                 ui.vertical(|ui| {
                                     if !item.is_dir {
                                         ui.label(RichText::new(format!("Boyut: {}", crate::ui::human_size(item.dest_size))).color(c.text_secondary()).size(t.typography.size_xs));
@@ -3266,17 +3287,6 @@ fn render_conflict_dialog(
                     });
                 });
             });
-        });
-
-            // Modal pencerenin dışına tıklandığında iptal et
-            if ctx.input(|i| i.pointer.any_click()) {
-                let click_pos = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
-                if let Some(pos) = click_pos {
-                    if !modal_resp.response.rect.contains(pos) && !d_rect.contains(pos) {
-                        cancel_clicked = true;
-                    }
-                }
-            }
         });
 
     if let Some(val) = toggle_apply_all {

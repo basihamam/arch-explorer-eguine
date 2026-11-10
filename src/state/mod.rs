@@ -2376,7 +2376,30 @@ impl AppState {
                 } else {
                     diag.policy_file.unwrap_or(choice)
                 };
-                if let Ok(Some(action)) = execute_transfer_item(&item.src_path, &item.dest_path, item.is_copy, ch) {
+
+                let ext = std::path::Path::new(&item.src_path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                let is_archive = matches!(ext.as_str(), "zip"|"tar"|"gz"|"tgz"|"bz2"|"xz"|"zst"|"7z"|"rar");
+
+                if is_archive && ch != ConflictChoice::Skip {
+                    let out_dir = if ch == ConflictChoice::KeepBoth {
+                        let parent = std::path::Path::new(&item.dest_path).parent().unwrap_or_else(|| std::path::Path::new("/"));
+                        let name = std::path::Path::new(&item.dest_path).file_name().and_then(|n| n.to_str()).unwrap_or("folder");
+                        crate::backend::clipboard::resolve_conflict(parent, name).to_string_lossy().to_string()
+                    } else {
+                        let _ = std::fs::remove_dir_all(&item.dest_path);
+                        item.dest_path.clone()
+                    };
+                    let src_c = item.src_path.clone();
+                    std::thread::spawn(move || {
+                        std::fs::create_dir_all(&out_dir).ok();
+                        let ext = std::path::Path::new(&src_c).extension().map(|e| e.to_str().unwrap_or("").to_lowercase()).unwrap_or_default();
+                        let _ = match ext.as_str() {
+                            "zip" => std::process::Command::new("unzip").args(["-q", &src_c, "-d", &out_dir]).status(),
+                            "gz" | "tgz" | "bz2" | "xz" | "zst" | "tar" => std::process::Command::new("tar").args(["xf", &src_c, "-C", &out_dir]).status(),
+                            _ => std::process::Command::new("7z").args(["x", &src_c, &format!("-o{}", out_dir), "-y"]).status(),
+                        };
+                    });
+                } else if let Ok(Some(action)) = execute_transfer_item(&item.src_path, &item.dest_path, item.is_copy, ch) {
                     diag.completed_undo_actions.push(action);
                 }
             }
@@ -2401,6 +2424,7 @@ impl AppState {
             let item = diag.queue[diag.current_idx].clone();
             let ext = std::path::Path::new(&item.src_path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
             let is_archive = matches!(ext.as_str(), "zip"|"tar"|"gz"|"tgz"|"bz2"|"xz"|"zst"|"7z"|"rar");
+
             if is_archive && choice != ConflictChoice::Skip {
                 let out_dir = if choice == ConflictChoice::KeepBoth {
                     let parent = std::path::Path::new(&item.dest_path).parent().unwrap_or_else(|| std::path::Path::new("/"));

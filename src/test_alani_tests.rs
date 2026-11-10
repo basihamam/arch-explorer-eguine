@@ -354,10 +354,10 @@ mod tests {
             d.insert_temp(egui::Id::new("drag_sources"), vec!["/tmp/test.txt".to_string()]);
         });
 
-        // 1. Frame 1: Pointer moves over Tab 1 (x=150.0, y=17.0) at t=1.0s (not yet 400ms)
+        // 1. Frame 1: Pointer moves over Tab 1 (x=200.0, y=20.0) at t=1.0s (not yet 400ms)
         let mut raw1 = egui::RawInput::default();
         raw1.time = Some(1.0);
-        raw1.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 17.0)));
+        raw1.events.push(egui::Event::PointerMoved(egui::pos2(200.0, 20.0)));
 
         let mut action1: Option<TabBarAction> = None;
         let _ = ctx.run(raw1, |ctx| {
@@ -368,9 +368,13 @@ mod tests {
         assert!(action1.is_none(), "Under 400ms hover must NOT trigger switch");
 
         // 2. Frame 2: Pointer remains over Tab 1 at t=1.45s (elapsed 450ms > 400ms)
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("is_file_dragging"), true);
+            d.insert_temp(egui::Id::new("drag_sources"), vec!["/tmp/test.txt".to_string()]);
+        });
         let mut raw2 = egui::RawInput::default();
         raw2.time = Some(1.45);
-        raw2.events.push(egui::Event::PointerMoved(egui::pos2(150.0, 17.0)));
+        raw2.events.push(egui::Event::PointerMoved(egui::pos2(200.0, 20.0)));
 
         let mut action2: Option<TabBarAction> = None;
         let _ = ctx.run(raw2, |ctx| {
