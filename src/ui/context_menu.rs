@@ -148,7 +148,7 @@ pub fn render(
                     if has_clipboard {
                         if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
                             let p = if entry.is_dir { entry.path.clone() } else { state.active_context_path() };
-                            if let Some(cb) = crate::backend::clipboard::clipboard_get() {
+                            if let Some(cb) = crate::backend::clipboard::clipboard_get_fresh() {
                                 let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                                 if !is_copy {
                                     let _ = crate::backend::clipboard::clipboard_clear();
@@ -447,7 +447,7 @@ pub fn render(
                         if has_clipboard {
                             if ctx_item(ui, t, icon(t, "paste"), "Paste", Some("Ctrl+V")).ctx_act() {
                                 let p = state.active_context_path();
-                                if let Some(cb) = crate::backend::clipboard::clipboard_get() {
+                                if let Some(cb) = crate::backend::clipboard::clipboard_get_fresh() {
                                     let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                                     if !is_copy {
                                         let _ = crate::backend::clipboard::clipboard_clear();

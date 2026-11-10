@@ -97,6 +97,8 @@ pub struct ArchExplorer {
     watched_paths: std::collections::HashSet<String>,
     // Periyodik sidebar (disk & adb) taraması
     last_sidebar_refresh: std::time::Instant,
+    // Ctrl+V debounce: tuş basma ve tuş bırakma olaylarının çift yapıştırma tetiklemesini önler
+    last_paste_time: Option<std::time::Instant>,
 }
 
 impl ArchExplorer {
@@ -136,6 +138,7 @@ impl ArchExplorer {
             _watcher: None,
             watched_paths: std::collections::HashSet::new(),
             last_sidebar_refresh: std::time::Instant::now(),
+            last_paste_time: None,
         };
 
         // İlk yükleme
@@ -1282,35 +1285,43 @@ impl ArchExplorer {
                     None
                 }
             });
-            let is_paste = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))))
-                || paste_event_text.is_some();
-            if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
-                let target_dir = self.state.active_context_path();
-                let cb_opt = crate::backend::clipboard::clipboard_get().or_else(|| {
-                    paste_event_text.as_deref().and_then(|text| {
-                        let paths = crate::backend::clipboard::parse_uri_list_string(text);
-                        if !paths.is_empty() {
-                            Some(crate::backend::clipboard::ClipboardState {
-                                op: crate::backend::clipboard::ClipboardOp::Copy,
-                                paths,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                });
+            let is_paste_press = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))));
+            // egui-winit (arboard) hata aldığında press event'ini yutup event listesine eklemez; ancak tuş bırakıldığında (pressed: false) event gönderilir!
+            let is_paste_release = i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: false, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))));
+            let is_paste = is_paste_press || is_paste_release || paste_event_text.is_some();
 
-                if let Some(cb) = cb_opt {
-                    let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
-                    if !is_copy {
-                        let _ = crate::backend::clipboard::clipboard_clear();
+            if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
+                let now = std::time::Instant::now();
+                let recently_pasted = self.last_paste_time.map_or(false, |t| now.duration_since(t).as_millis() < 300);
+                if !recently_pasted {
+                    self.last_paste_time = Some(now);
+                    let target_dir = self.state.active_context_path();
+                    let cb_opt = crate::backend::clipboard::clipboard_get_fresh().or_else(|| {
+                        paste_event_text.as_deref().and_then(|text| {
+                            let paths = crate::backend::clipboard::parse_uri_list_string(text);
+                            if !paths.is_empty() {
+                                Some(crate::backend::clipboard::ClipboardState {
+                                    op: crate::backend::clipboard::ClipboardOp::Copy,
+                                    paths,
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    if let Some(cb) = cb_opt {
+                        let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
+                        if !is_copy {
+                            let _ = crate::backend::clipboard::clipboard_clear();
+                        }
+                        self.state.notify.info(format!("{} öğe yapıştırılıyor…", cb.paths.len()));
+                        self.state.start_transfer(cb.paths, target_dir, is_copy);
+                        ctx.request_repaint();
+                    } else {
+                        self.state.notify.warning("Panoda yapıştırılacak dosya yok".into());
                     }
-                    self.state.notify.info(format!("{} öğe yapıştırılıyor…", cb.paths.len()));
-                    self.state.start_transfer(cb.paths, target_dir, is_copy);
-                    ctx.request_repaint();
-                } else {
-                    self.state.notify.warning("Panoda yapıştırılacak dosya yok".into());
                 }
             }
 

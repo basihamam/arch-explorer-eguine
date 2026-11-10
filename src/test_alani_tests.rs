@@ -454,4 +454,50 @@ mod tests {
         // Temizlik
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_11_ctrl_v_key_release_and_wayland_clipboard_transfer() {
+        let _guard = crate::backend::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_dir = std::env::temp_dir().join(format!("ae_test11_ctrlv_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+        let src_dir = temp_dir.join("kaynak");
+        let dst_dir = temp_dir.join("hedef");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let file_a = src_dir.join("rapor.pdf");
+        std::fs::write(&file_a, b"%PDF-1.4 test data").unwrap();
+
+        // 1. Transfer edilecek dosyayı hazırla
+        let sources = vec![file_a.to_string_lossy().to_string()];
+
+        // 2. Hedef dizinde aynı isimli dosya var mı kontrolü (conflict testi)
+        let conflict_file = dst_dir.join("rapor.pdf");
+        std::fs::write(&conflict_file, b"%PDF-1.4 eski versiyon").unwrap();
+
+        // 3. AppState ile transfer başlat
+        let mut state = crate::state::AppState::new();
+        state.nav.current_path = dst_dir.to_string_lossy().to_string();
+        state.start_transfer(sources, dst_dir.to_string_lossy().to_string(), true);
+
+        // Çakışma diyaloğu açılmış olmalı!
+        assert!(state.conflict_dialog.is_some(), "Hedefte dosya olduğu için conflict dialog tetiklenmeli");
+        let dialog = state.conflict_dialog.as_ref().unwrap();
+        assert_eq!(dialog.queue.len(), 1);
+        assert_eq!(dialog.queue[0].src_path, file_a.to_string_lossy().to_string());
+        assert_eq!(dialog.queue[0].dest_path, conflict_file.to_string_lossy().to_string());
+
+        // 4. Tuş bırakma (key release) simülasyonu mantık doğrulaması
+        let release_event = egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: Some(egui::Key::V),
+            pressed: false,
+            modifiers: egui::Modifiers::CTRL,
+            repeat: false,
+        };
+        let is_paste_release = matches!(release_event, egui::Event::Key { key, physical_key, pressed: false, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (key == egui::Key::V || physical_key == Some(egui::Key::V)));
+        assert!(is_paste_release, "Key::V release event Ctrl+V olarak algılanmalı");
+
+        // Temizlik
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

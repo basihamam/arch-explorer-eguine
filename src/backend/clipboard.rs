@@ -79,6 +79,7 @@ pub struct UndoResult {
 // Thread-safe global state
 static CLIPBOARD: Mutex<Option<ClipboardState>> = Mutex::new(None);
 static UNDO_STACK: Mutex<Vec<UndoAction>> = Mutex::new(Vec::new());
+static LAST_SYSTEM_CLIPBOARD_CHECK: Mutex<Option<(Option<ClipboardState>, std::time::Instant)>> = Mutex::new(None);
 
 const MAX_UNDO: usize = 50;
 
@@ -86,22 +87,34 @@ const MAX_UNDO: usize = 50;
 
 /// Seçili dosyaları clipboard'a kopyala (Ctrl+C)
 pub fn clipboard_copy(paths: Vec<String>) -> Result<(), String> {
-    let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
-    *cb = Some(ClipboardState {
+    let state = ClipboardState {
         op: ClipboardOp::Copy,
         paths: paths.clone(),
-    });
+    };
+    {
+        let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
+        *cb = Some(state.clone());
+    }
+    if let Ok(mut cache) = LAST_SYSTEM_CLIPBOARD_CHECK.lock() {
+        *cache = Some((Some(state), std::time::Instant::now()));
+    }
     copy_files_to_system_clipboard_async(paths, false);
     Ok(())
 }
 
 /// Seçili dosyaları clipboard'a kes (Ctrl+X)
 pub fn clipboard_cut(paths: Vec<String>) -> Result<(), String> {
-    let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
-    *cb = Some(ClipboardState {
+    let state = ClipboardState {
         op: ClipboardOp::Cut,
         paths: paths.clone(),
-    });
+    };
+    {
+        let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
+        *cb = Some(state.clone());
+    }
+    if let Ok(mut cache) = LAST_SYSTEM_CLIPBOARD_CHECK.lock() {
+        *cache = Some((Some(state), std::time::Instant::now()));
+    }
     copy_files_to_system_clipboard_async(paths, true);
     Ok(())
 }
@@ -172,11 +185,11 @@ pub fn copy_files_to_system_clipboard_async(paths: Vec<String>, is_cut: bool) {
         }).collect();
 
         let uri_list = uris.join("\r\n") + "\r\n";
-        let action_prefix = if is_cut { "cut\n" } else { "copy\n" };
-        let gnome_copied = format!("{}{}\n", action_prefix, uris.join("\n"));
 
-        // 1. Wayland ortamında wl-copy ile text/uri-list kopyalamayı dene
-        let mut wl_success = false;
+        // 1. Wayland ortamında wl-copy ile text/uri-list kopyala
+        // NOT: Asla hemen ardından wl-copy image/png çağırma! Wayland'de her wl-copy seçimi sıfırlar.
+        // Dosya kopyalama için evrensel standart MIME text/uri-list'tir.
+        let mut _wl_success = false;
         if let Ok(mut child) = std::process::Command::new("wl-copy")
             .args(["-t", "text/uri-list"])
             .stdin(std::process::Stdio::piped())
@@ -190,45 +203,22 @@ pub fn copy_files_to_system_clipboard_async(paths: Vec<String>, is_cut: bool) {
             }
             if let Ok(status) = child.wait() {
                 if status.success() {
-                    wl_success = true;
+                    _wl_success = true;
                 }
             }
         }
 
-        // Eğer tek bir görsel kopyalanıyorsa wl-copy ile image MIME kopyalamayı da dene
-        if paths.len() == 1 {
-            let p = &paths[0];
-            let lower = p.to_lowercase();
-            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp") {
-                if let Ok(mut child) = std::process::Command::new("wl-copy")
-                    .args(["-t", "image/png"])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    if let Ok(img) = image::open(p) {
-                        use std::io::Cursor;
-                        let mut bytes = Vec::new();
-                        if img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png).is_ok() {
-                            if let Some(mut stdin) = child.stdin.take() {
-                                use std::io::Write;
-                                let _ = stdin.write_all(&bytes);
-                            }
-                            let _ = child.wait();
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Python / Gtk clipboard daemon (X11 & Wayland çoklu target desteği: text/uri-list + x-special/gnome-copied-files + text/plain)
+        // 2. Python / Gtk clipboard daemon (X11 & Wayland çoklu target desteği: text/uri-list + x-special/gnome-copied-files + UTF8_STRING + text/plain + isteğe bağlı image/png)
         let helper_code = r#"
 import sys, os, urllib.parse
 try:
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gdk
+    from ctypes import c_void_p, c_char_p, c_uint32, c_int, CFUNCTYPE, Structure, POINTER, CDLL
+
+    if not Gtk.init_check():
+        sys.exit(0)
 
     if len(sys.argv) < 2:
         sys.exit(0)
@@ -236,14 +226,12 @@ try:
     paths = [os.path.abspath(p) for p in sys.argv[1:]]
     uris = [f"file://{urllib.parse.quote(p)}" for p in paths]
     uri_text = ("\r\n".join(uris) + "\r\n").encode('utf-8')
-    gnome_text = ("copy\n" + "\n".join(uris) + "\n").encode('utf-8')
+    action_type = os.environ.get("AEX_CLIPBOARD_OP", "copy")
+    gnome_text = (f"{action_type}\n" + "\n".join(uris) + "\n").encode('utf-8')
     plain_text = ("\n".join(paths) + "\n").encode('utf-8')
 
-    import ctypes
-    from ctypes import c_void_p, c_char_p, c_uint32, CFUNCTYPE, Structure, POINTER
-
-    gtk = ctypes.CDLL("libgtk-3.so.0")
-    gdk = ctypes.CDLL("libgdk-3.so.0")
+    gtk = CDLL("libgtk-3.so.0")
+    gdk = CDLL("libgdk-3.so.0")
 
     class GtkTargetEntry(Structure):
         _fields_ = [("target", c_char_p), ("flags", c_uint32), ("info", c_uint32)]
@@ -251,12 +239,24 @@ try:
     CLIPBOARD_GET_FUNC = CFUNCTYPE(None, c_void_p, c_void_p, c_uint32, c_void_p)
     CLIPBOARD_CLEAR_FUNC = CFUNCTYPE(None, c_void_p, c_void_p)
 
-    targets = (GtkTargetEntry * 4)(
+    raw_targets = [
         GtkTargetEntry(b"text/uri-list", 0, 0),
         GtkTargetEntry(b"x-special/gnome-copied-files", 0, 1),
         GtkTargetEntry(b"UTF8_STRING", 0, 2),
         GtkTargetEntry(b"text/plain", 0, 3)
-    )
+    ]
+
+    img_bytes = None
+    if len(paths) == 1 and paths[0].lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+        try:
+            with open(paths[0], 'rb') as f:
+                img_bytes = f.read()
+            raw_targets.append(GtkTargetEntry(b"image/png", 0, 4))
+        except Exception:
+            img_bytes = None
+
+    num_targets = len(raw_targets)
+    targets = (GtkTargetEntry * num_targets)(*raw_targets)
 
     def get_data(clipboard, selection_data, info, user_data):
         if info == 0:
@@ -265,6 +265,9 @@ try:
         elif info == 1:
             target_atom = gdk.gdk_atom_intern(b"x-special/gnome-copied-files", False)
             gtk.gtk_selection_data_set(selection_data, target_atom, 8, gnome_text, len(gnome_text))
+        elif info == 4 and img_bytes:
+            target_atom = gdk.gdk_atom_intern(b"image/png", False)
+            gtk.gtk_selection_data_set(selection_data, target_atom, 8, img_bytes, len(img_bytes))
         else:
             target_atom = gdk.gdk_atom_intern(b"UTF8_STRING", False)
             gtk.gtk_selection_data_set(selection_data, target_atom, 8, plain_text, len(plain_text))
@@ -281,23 +284,25 @@ try:
     gtk.gtk_clipboard_set_with_data.argtypes = [c_void_p, POINTER(GtkTargetEntry), c_uint32, CLIPBOARD_GET_FUNC, CLIPBOARD_CLEAR_FUNC, c_void_p]
     gtk.gtk_clipboard_set_with_data.restype = c_int
 
-    if gtk.gtk_clipboard_set_with_data(cb_ptr, targets, 4, _c_get, _c_clear, None):
+    if gtk.gtk_clipboard_set_with_data(cb_ptr, targets, num_targets, _c_get, _c_clear, None):
         while True:
             gtk.gtk_main_iteration_do(True)
 except Exception:
     pass
 "#;
 
+        let action_str = if is_cut { "cut" } else { "copy" };
         let _ = std::process::Command::new("python3")
             .arg("-c")
             .arg(helper_code)
             .args(&paths)
+            .env("AEX_CLIPBOARD_OP", action_str)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
 
-        // 3. Fallback: xclip (X11) ve arboard (düz metin fallback)
+        // 3. Fallback: xclip (X11)
         let _ = std::process::Command::new("xclip")
             .args(["-selection", "clipboard", "-target", "text/uri-list"])
             .stdin(std::process::Stdio::piped())
@@ -312,140 +317,263 @@ except Exception:
                 child.wait()
             });
 
+        // 4. arboard: Hem düz metin hem de egui-winit'in paste_command yakalaması için
         if let Ok(mut cb) = arboard::Clipboard::new() {
             let _ = cb.set_text(plain_text);
         }
     });
 }
 
-/// Clipboard içeriğini görüntüle (UI'da "kesilmiş" dosyaları soluklaştırmak için)
-/// Önce dahili panoyu kontrol eder (hızlı ve takılmasız), boşsa sistem panosundan okur
+/// Harici komutları UI donmasını önlemek için zaman aşımıyla çalıştırır
+fn run_command_with_timeout(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec<u8>> {
+    let mut child = match std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let mut stdout_handle = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let _ = stdout_handle.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+                } else {
+                    return None;
+                }
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+    }
+}
+
+/// Clipboard içeriğini görüntüle (UI'da "kesilmiş" dosyaları soluklaştırmak ve context menu için)
+/// 300ms boyunca önbelleklenmiş sonucu döndürür; UI thread asla takılmaz
 pub fn clipboard_get() -> Option<ClipboardState> {
-    if let Ok(guard) = CLIPBOARD.lock() {
-        if let Some(ref cb) = *guard {
-            let valid_paths: Vec<String> = cb.paths.iter()
-                .filter(|p| std::path::Path::new(p).exists())
-                .cloned()
-                .collect();
-            if !valid_paths.is_empty() {
-                return Some(ClipboardState {
-                    op: cb.op.clone(),
-                    paths: valid_paths,
-                });
+    clipboard_get_cached(false)
+}
+
+/// Ctrl+V veya yapıştır tıklandığında taze sistem panosunu zorla oku
+pub fn clipboard_get_fresh() -> Option<ClipboardState> {
+    clipboard_get_cached(true)
+}
+
+fn clipboard_get_cached(force_fresh: bool) -> Option<ClipboardState> {
+    let now = std::time::Instant::now();
+    if !force_fresh {
+        if let Ok(cache) = LAST_SYSTEM_CLIPBOARD_CHECK.lock() {
+            if let Some((ref cached_state, cached_time)) = *cache {
+                if now.duration_since(cached_time).as_millis() < 300 {
+                    return cached_state.clone();
+                }
             }
         }
     }
 
-    // Sadece dahili pano boşsa sistem panosunu oku (Firefox, Chrome, Nautilus, Dolphin vb.)
-    let system_paths = get_files_from_system_clipboard();
-    if !system_paths.is_empty() {
-        let new_cb = ClipboardState {
-            op: ClipboardOp::Copy,
-            paths: system_paths,
-        };
-        if let Ok(mut guard) = CLIPBOARD.lock() {
-            *guard = Some(new_cb.clone());
+    // 1. Sistem panosundan oku
+    let system_cb = get_clipboard_state_from_system();
+
+    // 2. Dahili pano ile birleştir
+    let final_cb = match system_cb {
+        Some(mut sys) => {
+            // Sistem panosunda dosya bulundu!
+            // Eğer dahili panodaki yollarla aynıysa, dahili panodaki Cut/Copy işlemini koru
+            if let Ok(guard) = CLIPBOARD.lock() {
+                if let Some(ref internal) = *guard {
+                    if internal.paths == sys.paths {
+                        sys.op = internal.op.clone();
+                    }
+                }
+            }
+            // Dahili panoyu da güncelle ki sonraki sorgularda senkron kalsın
+            if let Ok(mut guard) = CLIPBOARD.lock() {
+                *guard = Some(sys.clone());
+            }
+            Some(sys)
         }
-        return Some(new_cb);
+        None => {
+            // Sistem panosunda dosya yoksa (veya erişilemediyse) dahili panoyu kontrol et
+            if let Ok(guard) = CLIPBOARD.lock() {
+                if let Some(ref cb) = *guard {
+                    let valid_paths: Vec<String> = cb.paths.iter()
+                        .filter(|p| std::path::Path::new(p).exists())
+                        .cloned()
+                        .collect();
+                    if !valid_paths.is_empty() {
+                        Some(ClipboardState {
+                            op: cb.op.clone(),
+                            paths: valid_paths,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+
+    // Önbelleği güncelle
+    if let Ok(mut cache) = LAST_SYSTEM_CLIPBOARD_CHECK.lock() {
+        *cache = Some((final_cb.clone(), now));
+    }
+
+    final_cb
+}
+
+/// Wayland (wl-paste), X11 (xclip) ve arboard üzerinden panodaki dosya yollarını ve op tipini çeker
+pub fn get_clipboard_state_from_system() -> Option<ClipboardState> {
+    // 1. Wayland wl-paste: Önce hızlıca sunulan MIME türlerini kontrol et (-l)
+    if let Some(types_bytes) = run_command_with_timeout("wl-paste", &["-l"], 100) {
+        let types_str = String::from_utf8_lossy(&types_bytes);
+        // Tercih sırası: x-special/gnome-copied-files (cut/copy durumunu içerir) -> text/uri-list -> text/plain
+        if types_str.contains("x-special/gnome-copied-files") {
+            if let Some(out) = run_command_with_timeout("wl-paste", &["-t", "x-special/gnome-copied-files"], 150) {
+                let s = String::from_utf8_lossy(&out);
+                let (paths, op) = parse_uri_list_with_op(&s);
+                if !paths.is_empty() {
+                    return Some(ClipboardState { op, paths });
+                }
+            }
+        }
+        if types_str.contains("text/uri-list") {
+            if let Some(out) = run_command_with_timeout("wl-paste", &["-t", "text/uri-list"], 150) {
+                let s = String::from_utf8_lossy(&out);
+                let (paths, op) = parse_uri_list_with_op(&s);
+                if !paths.is_empty() {
+                    return Some(ClipboardState { op, paths });
+                }
+            }
+        }
+        if types_str.contains("text/plain") {
+            if let Some(out) = run_command_with_timeout("wl-paste", &["--no-newline"], 150) {
+                let s = String::from_utf8_lossy(&out);
+                let (paths, op) = parse_uri_list_with_op(&s);
+                if !paths.is_empty() {
+                    return Some(ClipboardState { op, paths });
+                }
+            }
+        }
+    } else {
+        // wl-paste -l desteklenmiyorsa veya hata verdiyse tek tek dene
+        if let Some(out) = run_command_with_timeout("wl-paste", &["-t", "x-special/gnome-copied-files"], 150) {
+            let s = String::from_utf8_lossy(&out);
+            let (paths, op) = parse_uri_list_with_op(&s);
+            if !paths.is_empty() {
+                return Some(ClipboardState { op, paths });
+            }
+        }
+        if let Some(out) = run_command_with_timeout("wl-paste", &["-t", "text/uri-list"], 150) {
+            let s = String::from_utf8_lossy(&out);
+            let (paths, op) = parse_uri_list_with_op(&s);
+            if !paths.is_empty() {
+                return Some(ClipboardState { op, paths });
+            }
+        }
+        if let Some(out) = run_command_with_timeout("wl-paste", &["--no-newline"], 150) {
+            let s = String::from_utf8_lossy(&out);
+            let (paths, op) = parse_uri_list_with_op(&s);
+            if !paths.is_empty() {
+                return Some(ClipboardState { op, paths });
+            }
+        }
+    }
+
+    // 2. X11 xclip text/uri-list
+    if let Some(out) = run_command_with_timeout("xclip", &["-selection", "clipboard", "-t", "text/uri-list", "-o"], 150) {
+        let s = String::from_utf8_lossy(&out);
+        let (paths, op) = parse_uri_list_with_op(&s);
+        if !paths.is_empty() {
+            return Some(ClipboardState { op, paths });
+        }
+    }
+
+    // 3. X11 xclip plain text
+    if let Some(out) = run_command_with_timeout("xclip", &["-selection", "clipboard", "-o"], 150) {
+        let s = String::from_utf8_lossy(&out);
+        let (paths, op) = parse_uri_list_with_op(&s);
+        if !paths.is_empty() {
+            return Some(ClipboardState { op, paths });
+        }
+    }
+
+    // 4. arboard::Clipboard ile doğrudan metin / dosya yolu okuma
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        if let Ok(text) = cb.get_text() {
+            let (paths, op) = parse_uri_list_with_op(&text);
+            if !paths.is_empty() {
+                return Some(ClipboardState { op, paths });
+            }
+        }
     }
 
     None
 }
 
-/// Wayland (wl-paste), X11 (xclip) ve arboard üzerinden panodaki dosya yollarını çeker
+/// Geriye dönük uyumluluk: Sistem panosundan sadece dosya yollarını çeker
 pub fn get_files_from_system_clipboard() -> Vec<String> {
-    // 1. Wayland text/uri-list
-    if let Ok(out) = std::process::Command::new("wl-paste")
-        .args(["-t", "text/uri-list"])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let paths = parse_uri_list_string(&s);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    // 2. Wayland x-special/gnome-copied-files
-    if let Ok(out) = std::process::Command::new("wl-paste")
-        .args(["-t", "x-special/gnome-copied-files"])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let paths = parse_uri_list_string(&s);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    // 3. Wayland text/plain
-    if let Ok(out) = std::process::Command::new("wl-paste")
-        .args(["--no-newline"])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let paths = parse_uri_list_string(&s);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    // 4. X11 xclip text/uri-list
-    if let Ok(out) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-t", "text/uri-list", "-o"])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let paths = parse_uri_list_string(&s);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    // 5. X11 xclip plain text
-    if let Ok(out) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-o"])
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let paths = parse_uri_list_string(&s);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    // 6. arboard::Clipboard ile doğrudan metin / dosya yolu okuma
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        if let Ok(text) = cb.get_text() {
-            let paths = parse_uri_list_string(&text);
-            if !paths.is_empty() {
-                return paths;
-            }
-        }
-    }
-
-    Vec::new()
+    get_clipboard_state_from_system().map(|cb| cb.paths).unwrap_or_default()
 }
 
 pub fn parse_uri_list_string(raw: &str) -> Vec<String> {
+    parse_uri_list_with_op(raw).0
+}
+
+pub fn parse_uri_list_with_op(raw: &str) -> (Vec<String>, ClipboardOp) {
     let mut results = Vec::new();
+    let mut op = ClipboardOp::Copy;
+
     for line in raw.lines() {
         let trimmed = line.trim().trim_matches(|c| c == '\'' || c == '"');
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "copy" || trimmed == "cut" {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
+        if trimmed == "cut" {
+            op = ClipboardOp::Cut;
+            continue;
+        }
+        if trimmed == "copy" {
+            op = ClipboardOp::Copy;
+            continue;
+        }
+
         let clean = if let Some(stripped) = trimmed.strip_prefix("file://") {
-            percent_decode_path(stripped)
+            let without_host = if let Some(after_localhost) = stripped.strip_prefix("localhost/") {
+                format!("/{}", after_localhost)
+            } else if stripped.starts_with('/') {
+                stripped.to_string()
+            } else {
+                format!("/{}", stripped)
+            };
+            percent_decode_path(&without_host)
         } else if trimmed.starts_with('/') {
             trimmed.to_string()
         } else {
@@ -456,7 +584,7 @@ pub fn parse_uri_list_string(raw: &str) -> Vec<String> {
             results.push(clean);
         }
     }
-    results
+    (results, op)
 }
 
 fn percent_decode_path(input: &str) -> String {
@@ -481,8 +609,13 @@ fn percent_decode_path(input: &str) -> String {
 
 /// Clipboard'ı temizle
 pub fn clipboard_clear() -> Result<(), String> {
-    let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
-    *cb = None;
+    {
+        let mut cb = CLIPBOARD.lock().map_err(|e| e.to_string())?;
+        *cb = None;
+    }
+    if let Ok(mut cache) = LAST_SYSTEM_CLIPBOARD_CHECK.lock() {
+        *cache = Some((None, std::time::Instant::now()));
+    }
     Ok(())
 }
 
@@ -902,14 +1035,16 @@ pub(crate) fn move_item_inner(src: &Path, dst: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_clipboard_copy_paste_undo() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let test_dir = format!("/tmp/ae_test_copy_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);
@@ -947,7 +1082,7 @@ mod tests {
 
     #[test]
     fn test_clipboard_cut_paste_undo() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let test_dir = format!("/tmp/ae_test_cut_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);
@@ -1042,7 +1177,7 @@ mod tests {
 
     #[test]
     fn test_undo_returns_restored_paths() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let test_dir = format!("/tmp/ae_test_undo_paths_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         let src_dir = format!("{}/src", test_dir);
         let dst_dir = format!("{}/dst", test_dir);
@@ -1064,7 +1199,7 @@ mod tests {
 
     #[test]
     fn test_paste_shortcut_handling() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let test_dir = format!("/tmp/ae_test_paste_sc_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -1094,7 +1229,52 @@ mod tests {
         assert!(cb.is_some());
         let cb = cb.unwrap();
         assert_eq!(cb.op, ClipboardOp::Copy);
-        assert_eq!(cb.paths, vec![f1]);
+        assert_eq!(cb.paths, vec![f1.clone()]);
+
+        // Test 5: file://localhost/ URI scheme and percent decoding
+        let local_uri = format!("file://localhost{}\n", f1.replace(' ', "%20"));
+        let parsed_local = parse_uri_list_string(&local_uri);
+        assert_eq!(parsed_local, vec![f1.clone()]);
+
+        // Test 6: clipboard_get_fresh returns updated state
+        let fresh_cb = clipboard_get_fresh();
+        assert!(fresh_cb.is_some());
+        assert_eq!(fresh_cb.unwrap().paths, vec![f1]);
+
+        // Test 7: parse_uri_list_with_op with cut prefix
+        let cut_data = format!("cut\nfile://{}\n", f2);
+        let (cut_paths, cut_op) = parse_uri_list_with_op(&cut_data);
+        assert_eq!(cut_paths, vec![f2.clone()]);
+        assert_eq!(cut_op, ClipboardOp::Cut);
+
+        // Test 8: clipboard_clear clears both internal state and cache
+        clipboard_clear().unwrap();
+        assert!(clipboard_get().is_none());
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_percent_decoding_and_turkish_chars() {
+        let test_dir = format!("/tmp/ae_test_turkish_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let turkish_file = format!("{}/türkçe çalışma dosyası.txt", test_dir);
+        fs::write(&turkish_file, "turkish chars test").unwrap();
+
+        // Encode as file URI with %20 and UTF-8 hex
+        let encoded_path = turkish_file
+            .replace(' ', "%20")
+            .replace('ü', "%C3%BC")
+            .replace('k', "k")
+            .replace('ç', "%C3%A7")
+            .replace('e', "e")
+            .replace('ı', "%C4%B1")
+            .replace('ş', "%C5%9F");
+        let uri = format!("file://{}", encoded_path);
+
+        let parsed = parse_uri_list_string(&uri);
+        assert_eq!(parsed, vec![turkish_file.clone()]);
 
         let _ = fs::remove_dir_all(&test_dir);
     }
