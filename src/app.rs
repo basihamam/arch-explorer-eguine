@@ -99,10 +99,12 @@ pub struct ArchExplorer {
     last_sidebar_refresh: std::time::Instant,
     // Ctrl+V debounce: tuş basma ve tuş bırakma olaylarının çift yapıştırma tetiklemesini önler
     last_paste_time: Option<std::time::Instant>,
+    // Ctrl tuşu zamanı: Hızlı klavye vuruşlarında ve xdotool simülasyonunda Ctrl bırakılsa bile kısayolu yakalar
+    last_ctrl_time: Option<std::time::Instant>,
 }
 
 impl ArchExplorer {
-    pub fn new(cc: &eframe::CreationContext) -> Self {
+    pub fn new(cc: &eframe::CreationContext, initial_path: Option<String>) -> Self {
         // Tema motoru başlat
         let theme = ThemeEngine::init();
 
@@ -139,6 +141,7 @@ impl ArchExplorer {
             watched_paths: std::collections::HashSet::new(),
             last_sidebar_refresh: std::time::Instant::now(),
             last_paste_time: None,
+            last_ctrl_time: None,
         };
 
         // İlk yükleme
@@ -189,6 +192,12 @@ impl ArchExplorer {
                 }
             }
         });
+
+        if let Some(ref p) = initial_path {
+            if std::path::Path::new(p).exists() {
+                app.state.navigate(p.clone());
+            }
+        }
 
         app.load_current_directory();
         app.sync_watchers();
@@ -1251,12 +1260,21 @@ impl ArchExplorer {
             let term_typing = self.state.terminal.open && self.state.terminal.is_focused;
             let search_focused = self.state.search.active && self.state.search.is_focused;
 
+            // Ctrl tuşunu takip et — Hızlı tuş basımlarında veya xdotool'da Ctrl erkenden bırakılsa bile kısayol yakalanır
+            let ctrl_held = i.modifiers.ctrl || i.modifiers.command;
+            if ctrl_held {
+                self.last_ctrl_time = Some(std::time::Instant::now());
+            }
+            let ctrl_active = ctrl_held || self.last_ctrl_time.map_or(false, |t| t.elapsed().as_millis() < 400);
+
             // Ctrl+C / Event::Copy — Copy
-            let is_copy = (i.key_pressed(Key::C) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::C || *physical_key == Some(egui::Key::C))))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let c_pressed = i.key_pressed(Key::C)
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, .. } if *key == egui::Key::C || *physical_key == Some(egui::Key::C)));
+            let is_copy = (ctrl_active && c_pressed) || i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             if is_copy && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
+                eprintln!("[Shortcuts] Ctrl+C algılandı! Seçili dosya sayısı: {}, yollar: {:?}", paths.len(), paths);
+                log::info!("Klavye kısayolu Ctrl+C algılandı. Seçili dosya sayısı: {}", paths.len());
                 if !paths.is_empty() {
                     let count = paths.len();
                     crate::backend::clipboard::clipboard_copy(paths.clone()).ok();
@@ -1265,11 +1283,13 @@ impl ArchExplorer {
             }
 
             // Ctrl+X / Event::Cut — Cut
-            let is_cut = (i.key_pressed(Key::X) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::X || *physical_key == Some(egui::Key::X))))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
+            let x_pressed = i.key_pressed(Key::X)
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, .. } if *key == egui::Key::X || *physical_key == Some(egui::Key::X)));
+            let is_cut = (ctrl_active && x_pressed) || i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             if is_cut && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let paths = self.state.selected_paths();
+                eprintln!("[Shortcuts] Ctrl+X algılandı! Seçili dosya sayısı: {}", paths.len());
+                log::info!("Klavye kısayolu Ctrl+X algılandı. Seçili dosya sayısı: {}", paths.len());
                 if !paths.is_empty() {
                     let count = paths.len();
                     crate::backend::clipboard::clipboard_cut(paths.clone()).ok();
@@ -1285,18 +1305,24 @@ impl ArchExplorer {
                     None
                 }
             });
-            let is_paste_press = (i.key_pressed(Key::V) && (i.modifiers.ctrl || i.modifiers.command))
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))));
-            // egui-winit (arboard) hata aldığında press event'ini yutup event listesine eklemez; ancak tuş bırakıldığında (pressed: false) event gönderilir!
-            let is_paste_release = i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: false, modifiers, .. } if (modifiers.ctrl || modifiers.command) && (*key == egui::Key::V || *physical_key == Some(egui::Key::V))));
-            let is_paste = is_paste_press || is_paste_release || paste_event_text.is_some();
+            let v_pressed = i.key_pressed(Key::V)
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, .. } if *key == egui::Key::V || *physical_key == Some(egui::Key::V)));
+            let v_released = i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: false, .. } if *key == egui::Key::V || *physical_key == Some(egui::Key::V)));
+
+            let is_paste = (ctrl_held && v_pressed)
+                || (ctrl_active && (v_pressed || v_released))
+                || paste_event_text.is_some();
 
             if is_paste && self.state.rename_target.is_none() && !search_focused && !term_typing {
                 let now = std::time::Instant::now();
                 let recently_pasted = self.last_paste_time.map_or(false, |t| now.duration_since(t).as_millis() < 300);
                 if !recently_pasted {
                     self.last_paste_time = Some(now);
+                    self.last_ctrl_time = None; // Tetiklendikten sonra tüket
                     let target_dir = self.state.active_context_path();
+                    eprintln!("[Shortcuts] Ctrl+V algılandı! Hedef dizin: {}", target_dir);
+                    log::info!("Klavye kısayolu Ctrl+V algılandı! Hedef dizin: {}", target_dir);
+
                     let cb_opt = crate::backend::clipboard::clipboard_get_fresh().or_else(|| {
                         paste_event_text.as_deref().and_then(|text| {
                             let paths = crate::backend::clipboard::parse_uri_list_string(text);
@@ -1311,23 +1337,31 @@ impl ArchExplorer {
                         })
                     });
 
+                    eprintln!("[Shortcuts] Pano durumu: {:?}", cb_opt.as_ref().map(|c| (&c.op, c.paths.len())));
+                    log::info!("Pano durumu: {:?}", cb_opt.as_ref().map(|c| (&c.op, c.paths.len())));
+
                     if let Some(cb) = cb_opt {
                         let is_copy = cb.op == crate::backend::clipboard::ClipboardOp::Copy;
                         if !is_copy {
                             let _ = crate::backend::clipboard::clipboard_clear();
                         }
+                        eprintln!("[Shortcuts] Yapıştırma işlemi başlatılıyor: {} öğe, hedef: {}, is_copy: {}", cb.paths.len(), target_dir, is_copy);
                         self.state.notify.info(format!("{} öğe yapıştırılıyor…", cb.paths.len()));
                         self.state.start_transfer(cb.paths, target_dir, is_copy);
                         ctx.request_repaint();
                     } else {
+                        eprintln!("[Shortcuts] Panoda yapıştırılacak dosya yok!");
                         self.state.notify.warning("Panoda yapıştırılacak dosya yok".into());
                     }
                 }
             }
 
-            // Select all
-            if i.key_pressed(Key::A) && i.modifiers.ctrl && !term_typing {
+            // Select all (Ctrl+A)
+            let a_pressed = i.key_pressed(Key::A)
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key, physical_key, pressed: true, .. } if *key == egui::Key::A || *physical_key == Some(egui::Key::A)));
+            if ((ctrl_held && a_pressed) || (ctrl_active && a_pressed)) && !term_typing && !search_focused && self.state.rename_target.is_none() {
                 let entries = self.state.dir.entries.clone();
+                eprintln!("[Shortcuts] Ctrl+A algılandı! Toplam öğe: {}", entries.len());
                 self.state.selection.select_all(&entries);
             }
 

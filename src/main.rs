@@ -94,10 +94,16 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
+    let init_path = if args.iter().skip(1).any(|a| !a.starts_with("--")) {
+        Some(target_path)
+    } else {
+        None
+    };
+
     eframe::run_native(
         "Arch Explorer",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::ArchExplorer::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(app::ArchExplorer::new(cc, init_path)))),
     )
 }
 

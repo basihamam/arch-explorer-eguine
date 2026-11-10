@@ -62,8 +62,8 @@ opt-level   = 1       # dev'de bile biraz optimize — egui compile süresini et
 
 [profile.release]
 panic       = "abort"
-codegen-units = 1
-lto         = true
+codegen-units = 4
+lto         = "thin"
 opt-level   = 3       # egui için "s" değil "3" — CPU bound rendering
 strip       = true
 
